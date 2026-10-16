@@ -100,6 +100,23 @@ class AppTests(unittest.TestCase):
             self.assertNotIn('book', {row['class_name'] for row in app.session_state.checklist.items})
             self.assertFalse(app.exception)
 
+    def test_arduino_connects_on_start_without_mode_selector(self):
+        from streamlit.testing.v1 import AppTest
+        from unittest.mock import Mock
+        serial = SimpleNamespace(in_waiting=0, write=Mock(return_value=0), read=Mock(return_value=b''), close=Mock())
+        with patch('serial.Serial', return_value=serial) as serial_factory, \
+                patch('streamlit_webrtc.webrtc_streamer', return_value=SimpleNamespace(state=SimpleNamespace(playing=False))):
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run()
+            self.assertFalse(app.exception)
+            self.assertFalse(any(radio.label == '동작 모드' for radio in app.radio))
+            self.assertEqual(app.session_state.controller.serial, serial)
+            self.assertFalse(app.session_state.controller.simulation)
+            serial_factory.assert_called_once()
+            self.assertEqual(serial_factory.call_args.kwargs['port'], 'COM3')
+            app.run()
+            serial_factory.assert_called_once()
+            self.assertFalse(app.exception)
+
     def test_future_item_is_shown_only_on_selected_day(self):
         from streamlit.testing.v1 import AppTest
         from profiles import ProfileStore

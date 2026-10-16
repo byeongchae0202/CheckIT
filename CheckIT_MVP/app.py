@@ -40,6 +40,7 @@ def card(name):
 if 'checklist' not in st.session_state:
     st.session_state.checklist = Checklist()
     st.session_state.controller = ArduinoController()
+    st.session_state.controller.connect(st.session_state.get('arduino_port', 'COM3'))
     st.session_state.detector = Detector()
     st.session_state.analysis = None
     st.session_state.notice = ''
@@ -194,19 +195,12 @@ from datetime import timezone, timedelta
 st.caption(datetime.now(timezone(timedelta(hours=9))).strftime('%Y년 %m월 %d일') + ' · Asia/Seoul')
 with st.sidebar:
     st.header('장치 설정')
-    mode = st.radio('동작 모드', ['시뮬레이션', '실제 Arduino'])
-    if mode == '시뮬레이션' and not controller.simulation:
-        controller.use_simulation()
+    port = st.text_input('COM 포트', 'COM3', key='arduino_port')
+    if st.button('연결 / 재연결'):
+        controller.connect(port.strip())
         sync()
-    elif mode == '실제 Arduino' and controller.simulation:
+    if st.button('연결 해제'):
         controller.disconnect()
-        controller.simulation = False
-    if mode == '실제 Arduino':
-        port = st.text_input('COM 포트', 'COM3')
-        if st.button('연결 / 재연결'):
-            controller.connect(port.strip())
-        if st.button('연결 해제'):
-            controller.disconnect()
     confidence = st.slider('AI 신뢰도 기준', 0.05, 0.95, step=0.05, key='confidence', on_change=save_preferences)
     st.caption('장치가 연결되지 않아도 준비물을 직접 확인할 수 있습니다.')
     if st.session_state.get('preference_error'):
