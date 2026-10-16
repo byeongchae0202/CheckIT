@@ -35,16 +35,11 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create_user('다른 사용자')
 
-    def test_exclusion_restoration_and_midnight(self):
-        self.store.exclude('default', 'umbrella')
-        profile = self.store.profile('default')
-        self.assertEqual(len(self.store.active_items(profile)), 2)
-        self.assertEqual(len(profile['items']), 3)
+    def test_items_are_removed_by_deleting_them(self):
+        self.store.delete_item('default', 'umbrella')
+        self.assertEqual(len(self.store.active_items(self.store.profile('default'))), 2)
         self.day[0] = '2026-10-17'
-        self.assertEqual(len(self.store.active_items(self.store.profile('default'))), 3)
-        self.store.exclude('default', 'umbrella')
-        self.store.exclude('default', 'umbrella', False)
-        self.assertEqual(len(self.store.active_items(self.store.profile('default'))), 3)
+        self.assertEqual(len(self.store.active_items(self.store.profile('default'))), 2)
 
     def test_validation_and_readd_class(self):
         with self.assertRaises(ValueError):
@@ -96,10 +91,10 @@ class ProfileTests(unittest.TestCase):
         checklist = Checklist()
         checklist.start()
         checklist.mark('book')
-        self.store.exclude('default', 'umbrella')
+        self.store.delete_item('default', 'umbrella')
         checklist.set_items(self.store.active_items(self.store.profile('default')))
         self.assertIn('book', checklist.confirmed)
-        self.store.exclude('default', 'book')
+        self.store.delete_item('default', 'book')
         checklist.set_items(self.store.active_items(self.store.profile('default')))
         self.assertNotIn('book', checklist.confirmed)
         checklist.set_items([])

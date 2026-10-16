@@ -67,37 +67,34 @@ class AppTests(unittest.TestCase):
             self.assertNotIn(key, app.session_state.checklist.confirmed)
             self.assertFalse(app.exception)
 
-    def test_user_crud_preferences_and_day_change(self):
+    def test_default_profile_preferences_and_day_change(self):
         from streamlit.testing.v1 import AppTest
-        from profiles import ProfileStore
         context = SimpleNamespace(state=SimpleNamespace(playing=False))
         with patch('streamlit_webrtc.webrtc_streamer', return_value=context):
             app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run()
+            self.assertEqual(app.session_state.profile['id'], 'default')
+            self.assertFalse(any(select.label == '사용자 선택' for select in app.selectbox))
+            self.assertFalse(any(button.label == '사용자 만들기' for button in app.button))
+            self.assertFalse(any(field.key == 'new_user_name' for field in app.text_input))
             app.checkbox(key='mark_book').check().run()
             app.text_input(key='new_item_name').set_value('지갑')
             app.text_input(key='new_lcd_name').set_value('WALLET')
             next(b for b in app.button if b.label == '준비물 추가').click().run()
             self.assertEqual(len(app.session_state.checklist.items), 4)
             self.assertIn('book', app.session_state.checklist.confirmed)
-            app.button(key='exclude_umbrella').click().run()
+            app.button(key='delete_umbrella').click().run()
             self.assertEqual(len(app.session_state.checklist.items), 3)
+            self.assertFalse(any(button.label in ('오늘만 제외', '오늘 복원') for button in app.button))
             app.slider(key='confidence').set_value(.65).run()
             self.assertEqual(app.session_state.live.region, (0.0, 0.0, 1.0, 1.0))
             self.assertFalse(any('검사 범위' in slider.label for slider in app.slider))
-            app.text_input(key='new_user_name').set_value('민수')
-            next(b for b in app.button if b.label == '사용자 만들기').click().run()
-            self.assertEqual(app.session_state.profile['name'], '민수')
-            self.assertFalse(app.session_state.checklist.confirmed)
-            self.assertEqual(app.slider(key='confidence').value, .4)
-            app.selectbox(key='user_id').select('default').run()
             self.assertEqual(app.slider(key='confidence').value, .65)
-            self.assertEqual(app.session_state.live.region, (0.0, 0.0, 1.0, 1.0))
             self.assertEqual(len(app.session_state.checklist.items), 3)
             app.button(key='new_check').click().run()
             self.assertEqual(len(app.session_state.checklist.items), 3)
             with patch('profiles.today', return_value='2099-01-02'):
                 app.run()
-                self.assertEqual(len(app.session_state.checklist.items), 3)
+                self.assertEqual(len(app.session_state.checklist.items), 2)
                 self.assertFalse(app.session_state.checklist.confirmed)
             app.button(key='delete_book').click().run()
             self.assertNotIn('book', {row['class_name'] for row in app.session_state.checklist.items})
@@ -135,6 +132,10 @@ class AppTests(unittest.TestCase):
             day[0] = '2026-10-18'
             app.run()
             self.assertTrue(scheduled_keys.issubset({row['class_name'] for row in app.session_state.checklist.items}))
+            deleted_key = next(iter(scheduled_keys))
+            app.button(key='cancel_scheduled_' + deleted_key).click().run()
+            self.assertEqual(len(store.scheduled_items('default', '2026-10-18')), 1)
+            self.assertNotIn(deleted_key, {row['class_name'] for row in app.session_state.checklist.items})
             self.assertFalse(app.exception)
 
     def test_weather_adds_today_only_and_failure_is_visible(self):
@@ -159,7 +160,7 @@ class AppTests(unittest.TestCase):
             self.assertTrue(any('오늘 23시 비 예보가 있어요' in info.value for info in app.info))
             self.assertIn('umbrella', {item['class_name'] for item in app.session_state.checklist.items})
             self.assertEqual(next(item for item in app.session_state.profile['items'] if item['class_name'] == 'umbrella')['active_on'], today())
-            app.button(key='exclude_umbrella').click().run()
+            app.button(key='cancel_scheduled_umbrella').click().run()
             runner.result = WeatherResult(True, today() + 'T10:01:00+09:00', ())
             app.run()
             self.assertNotIn('umbrella', {item['class_name'] for item in app.session_state.checklist.items})

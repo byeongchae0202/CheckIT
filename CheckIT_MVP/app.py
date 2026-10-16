@@ -66,6 +66,7 @@ try:
 except (OSError, sqlite3.Error) as exc:
     st.error(f'사용자 저장소를 열지 못했습니다. 저장 경로와 권한을 확인해주세요. ({exc})')
     st.stop()
+st.session_state.user_id = 'default'
 
 
 def sync():
@@ -180,12 +181,7 @@ if checklist.state == 'IDLE':
     action('START')
 st.title('🎒 CheckIT')
 st.caption('빠뜨림 없이, 가볍게 출발하세요. 카메라로 확인하거나 직접 체크할 수 있어요.')
-st.caption('지역·준비물·사용자 추가 설정은 왼쪽 메뉴(☰)에서 변경할 수 있어요.')
-users = store.users()
-user_names = {user['id']: user['name'] for user in users}
-if 'pending_user' in st.session_state:
-    st.session_state.user_id = st.session_state.pop('pending_user')
-st.selectbox('사용자 선택', list(user_names), format_func=user_names.get, key='user_id')
+st.caption('지역·준비물 설정은 왼쪽 메뉴(☰)에서 변경할 수 있어요.')
 previous = st.session_state.get('profile')
 if previous is None or previous['id'] != st.session_state.user_id or previous['day'] != today():
     load_profile(reset=True)
@@ -215,15 +211,6 @@ with st.sidebar:
     st.caption('장치가 연결되지 않아도 준비물을 직접 확인할 수 있습니다.')
     if st.session_state.get('preference_error'):
         st.warning('설정 저장 실패: ' + st.session_state.preference_error)
-    with st.expander('사용자 추가'):
-        with st.form('new_user'):
-            user_name = st.text_input('새 사용자 이름', max_chars=40, key='new_user_name')
-            if st.form_submit_button('사용자 만들기'):
-                try:
-                    st.session_state.pending_user = store.create_user(user_name)
-                    st.rerun()
-                except (ValueError, OSError, sqlite3.Error) as exc:
-                    st.error(str(exc))
     with st.expander('날씨·우산 설정'):
         weather_settings = dict(DEFAULT_WEATHER, **st.session_state.profile['settings'].get('weather', {}))
         weather_suffix = st.session_state.user_id
@@ -256,7 +243,7 @@ with st.sidebar:
                     st.error(str(exc))
         st.markdown('[기상청 단기예보 조회서비스·지역 격자 안내](https://www.data.go.kr/data/15084084/openapi.do)')
     with st.expander('준비물 관리'):
-        st.caption('날짜를 선택하고 그날 준비할 물건을 하나씩 추가하세요. 추가한 항목은 선택한 날짜에만 오늘의 체크리스트에 나타납니다.')
+        st.caption('날짜를 선택하고 그날 준비할 물건을 하나씩 추가하세요. 추가한 항목은 선택한 날짜의 체크리스트에 나타납니다.')
         schedule_date = st.date_input('준비 날짜', value=datetime.fromisoformat(today()).date(),
                                       min_value=datetime.fromisoformat(today()).date(),
                                       key='new_item_date_' + st.session_state.user_id)
@@ -306,16 +293,12 @@ with st.sidebar:
         doc.addEventListener('keydown', handler, true);
         </script>''', height=0)
         for managed in st.session_state.profile['items']:
+            if managed['active_on'] is not None:
+                continue
             item_key = managed['class_name']
-            excluded = managed['excluded_on'] == today()
-            st.write(managed['name'] + (' · 오늘 제외' if excluded else ''))
-            exclude_col, delete_col = st.columns(2)
+            st.write(managed['name'])
             try:
-                if exclude_col.button('오늘 복원' if excluded else '오늘만 제외', key='exclude_' + item_key):
-                    store.exclude(st.session_state.user_id, item_key, not excluded)
-                    load_profile()
-                    st.rerun()
-                if delete_col.button('삭제', key='delete_' + item_key):
+                if st.button('삭제', key='delete_' + item_key):
                     store.delete_item(st.session_state.user_id, item_key)
                     load_profile()
                     st.rerun()
@@ -353,10 +336,7 @@ def weather_summary():
                 st.warning('날씨 조건은 충족했지만 우산을 저장하지 못했습니다. 목록을 직접 확인해주세요.')
         profile = st.session_state.profile
         st.info(weather_message(result, settings))
-        excluded = any(row['class_name'] == 'umbrella' and row['excluded_on'] == today() for row in profile['items'])
-        if excluded:
-            st.info('우산은 오늘 검사에서 제외했어요. 날씨가 갱신되어도 다시 추가하지 않습니다.')
-        elif result.rain and not settings['enabled']:
+        if result.rain and not settings['enabled']:
             st.caption('우산 자동 추가는 꺼져 있어요. 준비물 목록에서 직접 확인해주세요.')
         st.caption(settings['region_name'] + ' · 조회 ' + result.checked_at[11:16] + ' · ' + ' / '.join(result.references) + ' · 출처: 기상청')
 
@@ -503,9 +483,6 @@ def render_workspace():
             st.checkbox('~~' + item['name'] + '~~' if source else item['name'],
                         key='mark_' + key, on_change=toggle_item, args=(key,))
             st.caption({'auto': '자동 인식', 'manual': '직접 확인'}.get(source, '미확인'))
-        excluded_items = [row for row in st.session_state.profile['items'] if row['excluded_on'] == today()]
-        if excluded_items:
-            st.caption('오늘 제외: ' + ', '.join(row['name'] for row in excluded_items) + ' · 준비물 관리에서 복원할 수 있습니다.')
         if not total:
             st.info('오늘 검사할 준비물이 없어요.')
         elif checklist.state == 'READY':

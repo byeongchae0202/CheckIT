@@ -128,7 +128,7 @@ class ProfileStore:
                 'items': rows, 'day': self.day()}
 
     def active_items(self, profile):
-        return [row for row in profile['items'] if row['excluded_on'] != profile['day']]
+        return list(profile['items'])
 
     def scheduled_items(self, user_id, day=None):
         with self.connect() as db:
@@ -182,15 +182,6 @@ class ProfileStore:
                 db.execute('INSERT OR IGNORE INTO daily_exclusions VALUES (?, ?, ?)', (user_id, self.day(), 'umbrella'))
             db.execute('DELETE FROM items WHERE user_id=? AND class_name=?', (user_id, key))
 
-    def exclude(self, user_id, key, excluded=True):
-        with self.connect() as db:
-            db.execute('UPDATE items SET excluded_on=? WHERE user_id=? AND class_name=?',
-                       (self.day() if excluded else None, user_id, key))
-            if excluded:
-                db.execute('INSERT OR IGNORE INTO daily_exclusions VALUES (?, ?, ?)', (user_id, self.day(), key))
-            else:
-                db.execute('DELETE FROM daily_exclusions WHERE user_id=? AND day=? AND class_name=?', (user_id, self.day(), key))
-
     def ensure_weather_umbrella(self, user_id, day):
         if day != self.day():
             return False
@@ -202,7 +193,7 @@ class ProfileStore:
             row = db.execute('SELECT * FROM items WHERE user_id=? AND (class_name=? OR name=?)',
                              (user_id, 'umbrella', '우산')).fetchone()
             if row:
-                if row['excluded_on'] == day or row['active_on'] in (None, day):
+                if row['active_on'] in (None, day):
                     return False
                 db.execute('UPDATE items SET active_on=?,excluded_on=NULL WHERE user_id=? AND class_name=?',
                            (day, user_id, row['class_name']))
@@ -264,8 +255,8 @@ class ProfileStore:
             sql += ' AND p.class_name=?'
             params.append(key)
         if active_only:
-            sql += ' AND i.personal_enabled=1 AND (i.excluded_on IS NULL OR i.excluded_on<>?) AND (i.active_on IS NULL OR i.active_on=?)'
-            params.extend((self.day(), self.day()))
+            sql += ' AND i.personal_enabled=1 AND (i.active_on IS NULL OR i.active_on=?)'
+            params.append(self.day())
         with self.connect() as db:
             return [dict(row) for row in db.execute(sql + ' ORDER BY p.rowid', params)]
 

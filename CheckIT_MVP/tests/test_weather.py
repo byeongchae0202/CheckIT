@@ -174,14 +174,12 @@ class UmbrellaTests(unittest.TestCase):
         self.store.delete_item('default', 'umbrella')
         self.day[0] = '2026-10-16'
 
-    def test_daily_umbrella_dedup_exclusion_and_next_day(self):
+    def test_daily_umbrella_dedup_delete_and_next_day(self):
         self.assertTrue(self.store.ensure_weather_umbrella('default', self.day[0]))
         self.assertFalse(self.store.ensure_weather_umbrella('default', self.day[0]))
-        self.store.exclude('default', 'umbrella')
+        self.store.delete_item('default', 'umbrella')
         self.assertFalse(self.store.ensure_weather_umbrella('default', self.day[0]))
         self.assertEqual(len(self.store.active_items(self.store.profile('default'))), 2)
-        self.store.exclude('default', 'umbrella', False)
-        self.assertEqual(len(self.store.active_items(self.store.profile('default'))), 3)
         self.day[0] = '2026-10-17'
         self.assertEqual(len(self.store.active_items(self.store.profile('default'))), 2)
         self.assertFalse(self.store.ensure_weather_umbrella('default', '2026-10-16'))
