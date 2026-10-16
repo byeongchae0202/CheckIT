@@ -6,6 +6,17 @@ from checklist import Checklist
 
 
 class ProfileTests(unittest.TestCase):
+    def test_recognition_name_guidance(self):
+        from profiles import SUPPORTED, recognition_for_name
+        for key, label in SUPPORTED.items():
+            self.assertEqual(recognition_for_name(key), key)
+            self.assertEqual(recognition_for_name(label), key)
+        self.assertEqual(recognition_for_name(' 스마트 폰 '), 'cell phone')
+        self.assertEqual(recognition_for_name('LAPTOP'), 'laptop')
+        self.assertNotIn('person', SUPPORTED)
+        for unknown in ('', '지갑', '열쇠', '책가방', '컵라면', '사람', 'person'):
+            self.assertIsNone(recognition_for_name(unknown))
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

@@ -66,11 +66,17 @@ class FrameTests(unittest.TestCase):
                         dict(class_name='bottle', box=[0, 0, 10, 10])], image
         now = [0]
         live = LiveRecognition(Detector(), clock=lambda: now[0])
+        live.configure((.15, .15, .85, .85), .4, True)
         for instant in (0, .4, .9):
             now[0] = instant
             result = live.recv(self.frame)
             self.assertEqual(result.width, 100)
         self.assertEqual(live.drain()[0], {'book'})
+        live.configure((0, 0, 1, 1), .4, True)
+        for instant in (1.1, 1.5, 2.0):
+            now[0] = instant
+            live.recv(self.frame)
+        self.assertEqual(live.drain()[0], {'book', 'bottle'})
         live.pause()
         now[0] = 2
         live.recv(self.frame)

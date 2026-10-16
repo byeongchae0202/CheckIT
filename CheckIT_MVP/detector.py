@@ -24,7 +24,9 @@ class Detector:
                 from ultralytics import YOLO
                 MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
                 self.model = YOLO(str(MODEL_FILE))
-            result = self.model.predict(bgr, conf=confidence, verbose=False)[0]
+            # 사진·실시간 영상 모두 사람은 결과와 주석 이미지에서 제외한다.
+            allowed_classes = [index for index, name in self.model.names.items() if name != 'person']
+            result = self.model.predict(bgr, conf=confidence, verbose=False, classes=allowed_classes)[0]
             rows = [{'class_name': result.names[int(box.cls.item())],
                      'confidence': float(box.conf.item()),
                      'box': box.xyxy[0].tolist()} for box in result.boxes]

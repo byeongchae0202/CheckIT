@@ -9,7 +9,36 @@ from contextlib import contextmanager
 from config import ITEMS_FILE
 
 DEFAULT_SETTINGS = {'confidence': 0.4, 'roi_x': [15, 85], 'roi_y': [15, 85]}
-SUPPORTED = {'bottle': '물병', 'book': '책', 'umbrella': '우산'}
+# yolo11n.pt의 COCO 80종. 저장 키는 모델의 영문 클래스명과 일치해야 한다.
+SUPPORTED = dict(zip(
+    ('person,bicycle,car,motorcycle,airplane,bus,train,truck,boat,traffic light,fire hydrant,stop sign,parking meter,bench,'
+     'bird,cat,dog,horse,sheep,cow,elephant,bear,zebra,giraffe,backpack,umbrella,handbag,tie,suitcase,frisbee,skis,snowboard,'
+     'sports ball,kite,baseball bat,baseball glove,skateboard,surfboard,tennis racket,bottle,wine glass,cup,fork,knife,spoon,bowl,'
+     'banana,apple,sandwich,orange,broccoli,carrot,hot dog,pizza,donut,cake,chair,couch,potted plant,bed,dining table,toilet,'
+     'tv,laptop,mouse,remote,keyboard,cell phone,microwave,oven,toaster,sink,refrigerator,book,clock,vase,scissors,teddy bear,hair drier,toothbrush').split(','),
+    ('사람,자전거,자동차,오토바이,비행기,버스,기차,트럭,보트,신호등,소화전,정지 표지판,주차 요금기,벤치,'
+     '새,고양이,개,말,양,소,코끼리,곰,얼룩말,기린,백팩,우산,핸드백,넥타이,여행 가방,원반,스키,스노보드,'
+     '스포츠 공,연,야구 방망이,야구 글러브,스케이트보드,서핑보드,테니스 라켓,물병,와인잔,컵,포크,칼,숟가락,그릇,'
+     '바나나,사과,샌드위치,오렌지,브로콜리,당근,핫도그,피자,도넛,케이크,의자,소파,화분,침대,식탁,변기,'
+     'TV,노트북,마우스,리모컨,키보드,휴대폰,전자레인지,오븐,토스터,싱크대,냉장고,책,시계,꽃병,가위,곰 인형,헤어드라이어,칫솔').split(',')))
+
+
+SUPPORTED.pop('person', None)
+
+
+def recognition_for_name(name):
+    """지원 표시명·영문명·명시적 별칭만 비교한다. 부분 문자열로 추측하지 않는다."""
+    normalized = ''.join(name.casefold().split())
+    if not normalized:
+        return None
+    aliases = {'핸드폰': 'cell phone', '스마트폰': 'cell phone', '휴대전화': 'cell phone',
+               '생수병': 'bottle', '물통': 'bottle', '배낭': 'backpack',
+               '랩탑': 'laptop', '캐리어': 'suitcase', '텔레비전': 'tv',
+               '티비': 'tv', '헤어드라이기': 'hair drier', '드라이기': 'hair drier'}
+    for key, label in SUPPORTED.items():
+        if normalized in (''.join(key.casefold().split()), ''.join(label.casefold().split())):
+            return key
+    return aliases.get(normalized)
 
 
 def today():

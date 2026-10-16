@@ -4,11 +4,12 @@ import sqlite3
 import inspect
 from datetime import datetime
 import streamlit as st
+import streamlit.components.v1 as components
 from checklist import Checklist
 from detector import Detector
 from arduino_controller import ArduinoController
 from realtime import LiveRecognition
-from profiles import ProfileStore, SUPPORTED, today
+from profiles import ProfileStore, SUPPORTED, today, recognition_for_name
 from config import PROFILE_DB, get_weather_key
 from weather import WeatherClient, WeatherRunner, DEFAULT_WEATHER, MODES, request_token, weather_message
 from regions import load_regions, RegionIndex
@@ -43,8 +44,17 @@ if 'checklist' not in st.session_state:
     st.session_state.notice = ''
 checklist = st.session_state.checklist
 controller = st.session_state.controller
-if 'live' not in st.session_state:
+if 'live' not in st.session_state or type(st.session_state.live) is not LiveRecognition:
+    previous_live = st.session_state.get('live')
+    blocked = {}
+    if previous_live is not None:
+        previous_live.pause()
+        with previous_live.lock:
+            blocked = dict(previous_live.tracker.blocked)
+        st.session_state.camera_generation = st.session_state.get('camera_generation', 0) + 1
+        st.session_state.live_context = None
     st.session_state.live = LiveRecognition(st.session_state.detector)
+    st.session_state.live.tracker.blocked = blocked
 live = st.session_state.live
 if 'weather_runner' not in st.session_state:
     st.session_state.weather_runner = WeatherRunner()
@@ -110,9 +120,17 @@ def save_preferences():
         st.session_state.preference_error = ''
 
 
-def save_region_preference(axis, widget_key):
-    st.session_state[axis] = tuple(st.session_state[widget_key])
-    save_preferences()
+def restart_live_camera():
+    global live
+    old = st.session_state.live
+    old.pause()
+    with old.lock:
+        blocked = dict(old.tracker.blocked)
+    live = LiveRecognition(st.session_state.detector)
+    live.tracker.blocked = blocked
+    st.session_state.live = live
+    st.session_state.camera_generation = st.session_state.get('camera_generation', 0) + 1
+    st.session_state.live_context = None
 
 
 def select_weather_region(settings, suffix):
@@ -238,12 +256,21 @@ with st.sidebar:
         st.markdown('[기상청 단기예보 조회서비스·지역 격자 안내](https://www.data.go.kr/data/15084084/openapi.do)')
     with st.expander('준비물 관리'):
         st.caption('삭제하면 목록에서 사라집니다. 오늘만 제외한 항목은 한국 시간 기준 다음 날 다시 포함됩니다.')
-        with st.form('add_item', clear_on_submit=True):
-            item_name = st.text_input('준비물 이름', max_chars=60, key='new_item_name')
+        item_name = st.text_input('준비물 이름', max_chars=60, key='new_item_name',
+                                  help='이름을 입력한 뒤 Enter를 누르거나 다른 곳을 클릭하면 지원 여부를 확인합니다.')
+        suggested = recognition_for_name(item_name)
+        if suggested:
+            st.success(f'YOLO 지원 목록에 있어요: {SUPPORTED[suggested]} ({suggested}). 아래 확인 방식에서 해당 자동 인식을 선택해주세요.')
+        elif item_name.strip():
+            st.info('입력한 이름과 일치하는 YOLO 지원 종류를 찾지 못했어요. 아래 목록에서 다른 이름으로 있는지 확인하거나, 개인 사진 등록·직접 체크를 이용해주세요.')
+        with st.form('add_item', clear_on_submit=True, enter_to_submit=False):
             lcd_name = st.text_input('LCD 영문 이름', max_chars=16, key='new_lcd_name')
             recognition = st.selectbox('확인 방식', [None, *SUPPORTED],
-                                       format_func=lambda key: '직접 체크' if key is None else SUPPORTED[key] + ' 자동 인식')
+                                       format_func=lambda key: '직접 체크' if key is None else SUPPORTED[key] + ' 자동 인식 (' + key + ')')
+            st.caption('사람을 제외한 YOLO 기본 모델의 79종을 선택할 수 있습니다. 같은 종류의 다른 물건도 인식하며, 지갑·열쇠 등 목록에 없는 물건은 개인 사진 등록을 이용해주세요.')
             st.caption('개인 물건 사진은 메인 화면 아래의 내 물건 등록·관리에서 등록할 수 있습니다.')
+            if suggested and recognition != suggested:
+                st.caption('이름 안내는 추천입니다. 실제 추가는 위에서 선택한 확인 방식으로 저장됩니다.')
             if st.form_submit_button('준비물 추가'):
                 try:
                     store.add_item(st.session_state.user_id, item_name, lcd_name, recognition)
@@ -251,6 +278,28 @@ with st.sidebar:
                     st.rerun()
                 except (ValueError, OSError, sqlite3.Error) as exc:
                     st.error(str(exc))
+        components.html('''<script>
+        // 이 입력 영역의 텍스트 필드만 처리한다. 한글 조합 Enter는 유지한다.
+        const doc = window.parent.document;
+        const slot = '__checkitItemEnter';
+        if (window.parent[slot]) doc.removeEventListener('keydown', window.parent[slot], true);
+        const handler = event => {
+          if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+          const label = event.target.getAttribute('aria-label');
+          let next;
+          if (label === '준비물 이름') next = doc.querySelector('input[aria-label="LCD 영문 이름"]');
+          if (label === 'LCD 영문 이름') {
+            const form = event.target.closest('[data-testid="stForm"]');
+            next = form && form.querySelector('[role="combobox"]');
+          }
+          if (!next) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          next.focus();
+        };
+        window.parent[slot] = handler;
+        doc.addEventListener('keydown', handler, true);
+        </script>''', height=0)
         for managed in st.session_state.profile['items']:
             item_key = managed['class_name']
             excluded = managed['excluded_on'] == today()
@@ -269,7 +318,6 @@ with st.sidebar:
                 st.error(str(exc))
 
 
-@st.fragment(run_every=1)
 def weather_summary():
     if st.session_state.profile['day'] != today():
         st.rerun()
@@ -308,151 +356,172 @@ def weather_summary():
         st.caption(settings['region_name'] + ' · 조회 ' + result.checked_at[11:16] + ' · ' + ' / '.join(result.references) + ' · 출처: 기상청')
 
 
-with card('weather_card'):
-    st.markdown('**오늘의 날씨**')
-    weather_summary()
-camera, items = st.columns([3, 2], gap='large')
-with camera, card('camera_card'):
-    st.subheader('준비물 카메라')
-    camera_enabled = st.checkbox('카메라 사용', value=True, key='camera_enabled')
-    st.caption('카메라를 허용하면 자동 인식합니다. 중지하려면 카메라 사용을 해제하세요.')
-    with st.expander('검사 구역 설정'):
-        x_key, y_key = 'roi_x_input_' + st.session_state.user_id, 'roi_y_input_' + st.session_state.user_id
-        horizontal = st.slider('가로 검사 범위 (%)', 0, 100, value=tuple(st.session_state.roi_x), key=x_key,
-                               on_change=save_region_preference, args=('roi_x', x_key))
-        vertical = st.slider('세로 검사 범위 (%)', 0, 100, value=tuple(st.session_state.roi_y), key=y_key,
-                             on_change=save_region_preference, args=('roi_y', y_key))
-        st.caption('박스 중심이 구역 경계 안에 있는 물건만 확인합니다. 자동 확인은 최소 3회·0.8초 연속 탐지가 필요합니다.')
-    region = (horizontal[0] / 100, vertical[0] / 100, horizontal[1] / 100, vertical[1] / 100)
-    valid_region = horizontal[0] < horizontal[1] and vertical[0] < vertical[1]
-    if not valid_region:
-        st.warning('검사 구역의 가로·세로 폭을 0보다 크게 설정해주세요.')
-    live.configure(region if valid_region else live.region, confidence, camera_enabled and valid_region and bool(checklist.items))
-    try:
-        from streamlit_webrtc import webrtc_streamer, WebRtcMode
-        camera_options = {}
-        if 'media_toggle_controls' in inspect.signature(webrtc_streamer).parameters:
-            camera_options['media_toggle_controls'] = False
-        context = webrtc_streamer(
-            key='checkit_camera', mode=WebRtcMode.SENDRECV,
-            desired_playing_state=camera_enabled and valid_region and bool(checklist.items),
-            rtc_configuration={'iceServers': []},
-            media_stream_constraints={'video': {'width': {'ideal': 640}, 'height': {'ideal': 480}, 'frameRate': {'ideal': 10}}, 'audio': False},
-            video_frame_callback=live.recv, on_video_ended=live.pause,
-            async_processing=True,
-            **camera_options,
-            translations={'start': '카메라 다시 연결', 'stop': '카메라 중지',
-                          'device_ask_permission': '브라우저에서 카메라 권한을 허용해주세요.',
-                          'device_access_denied': '카메라 권한이 거부됐어요. 브라우저 설정에서 허용하거나 사진·수동 확인을 이용하세요.',
-                          'device_not_available': '사용할 수 있는 카메라가 없어요. 사진·수동 확인을 이용하세요.'},
-        )
-        st.session_state.live_context = context
-        if context.state.playing:
-            st.caption('● 영상 연결됨 · 검사 구역에 물건을 놓으세요.')
-        elif camera_enabled:
-            st.info('카메라 연결 대기 중입니다. 권한을 허용해주세요. 연결이 안 되면 카메라 사용을 껐다 켜거나 사진·수동 확인을 이용하세요.')
-        else:
-            st.caption('인식 중지 · 확인한 항목은 유지됩니다.')
-    except ImportError:
-        live.pause()
-        st.warning('실시간 카메라 의존성이 없습니다. requirements.txt를 설치한 뒤 다시 실행해주세요. 사진·수동 확인은 사용할 수 있습니다.')
-    with st.expander('사진으로 확인'):
-        st.caption('사진은 전체 이미지에서 즉시 확인합니다. 수동 해제한 종류는 영상에서 1초 이상 사라진 뒤 재확인하거나 직접 체크해주세요.')
-        source = st.radio('사진 입력 방식', ['이미지 업로드', '카메라 촬영'], horizontal=True)
-        if source == '이미지 업로드':
-            photo = st.file_uploader('사진 선택 (JPG / PNG / WEBP)', type=['jpg', 'jpeg', 'png', 'webp'])
-        else:
-            photo = st.camera_input('준비물 사진 촬영')
-        if st.button('사진 분석 실행', disabled=not checklist.items, key='analyze'):
-            if photo is None:
-                st.warning('먼저 사진을 촬영하거나 업로드하세요.')
+# 카메라만 주기 갱신하고 준비물 위젯은 실제 상태 변경 때 갱신한다.
+def render_workspace():
+    with card('weather_card'):
+        st.markdown('**오늘의 날씨**')
+        weather_summary()
+    camera, items = st.columns([3, 2], gap='large')
+    @st.fragment(run_every=0.5)
+    def render_camera():
+        st.subheader('준비물 카메라')
+        camera_enabled = st.checkbox('카메라 사용', value=True, key='camera_enabled')
+        st.button('실시간 연결 초기화', key='restart_camera', on_click=restart_live_camera)
+        st.caption('카메라를 허용하면 자동 인식합니다. 중지하려면 카메라 사용을 해제하세요.')
+        st.caption('카메라 화면 전체에서 인식합니다. 자동 확인은 최소 3회·0.8초 연속 탐지가 필요합니다.')
+        live.configure((0.0, 0.0, 1.0, 1.0), confidence, camera_enabled and bool(checklist.items))
+        try:
+            from streamlit_webrtc import webrtc_streamer, WebRtcMode
+            camera_options = {}
+            if 'media_toggle_controls' in inspect.signature(webrtc_streamer).parameters:
+                camera_options['media_toggle_controls'] = False
+            if 'video_html_attrs' in inspect.signature(webrtc_streamer).parameters:
+                camera_options['video_html_attrs'] = {
+                    'autoPlay': True, 'muted': True, 'playsInline': True,
+                    'controls': True, 'style': {'width': '100%'},
+                }
+            context = webrtc_streamer(
+                key='checkit_camera_' + str(st.session_state.get('camera_generation', 0)), mode=WebRtcMode.SENDRECV,
+                desired_playing_state=camera_enabled and bool(checklist.items),
+                rtc_configuration={'iceServers': []},
+                media_stream_constraints={'video': {'width': {'ideal': 640}, 'height': {'ideal': 480}, 'frameRate': {'ideal': 10}}, 'audio': False},
+                video_frame_callback=live.recv, on_video_ended=live.pause,
+                async_processing=True,
+                **camera_options,
+                translations={'start': '카메라 다시 연결', 'stop': '카메라 중지',
+                              'device_ask_permission': '브라우저에서 카메라 권한을 허용해주세요.',
+                              'device_access_denied': '카메라 권한이 거부됐어요. 브라우저 설정에서 허용하거나 사진·수동 확인을 이용하세요.',
+                              'device_not_available': '사용할 수 있는 카메라가 없어요. 사진·수동 확인을 이용하세요.'},
+            )
+            st.session_state.live_context = context
+            if context.state.playing:
+                st.caption('● 영상 연결됨 · 카메라에 준비물을 보여주세요.')
+            elif camera_enabled:
+                st.info('카메라 연결 대기 중입니다. 권한을 허용해주세요. 연결이 안 되면 카메라 사용을 껐다 켜거나 사진·수동 확인을 이용하세요.')
             else:
-                try:
-                    with st.spinner('사진 분석 중…'):
-                        rows, annotated = st.session_state.detector.detect(photo.getvalue(), confidence)
-                        checklist.apply_detections(live.photo_allowed(row['class_name'] for row in rows))
-                        st.session_state.analysis = (rows, annotated)
-                        st.session_state.notice = '' if rows else '탐지 결과가 없습니다. 다른 사진이나 수동 확인을 사용하세요.'
-                    sync()
-                    st.rerun()
-                except RuntimeError as exc:
-                    st.error(str(exc))
-                    controller.send_state('ERROR')
-        if st.session_state.notice:
-            st.info(st.session_state.notice)
-        if st.session_state.analysis is not None:
-            rows, annotated = st.session_state.analysis
-            st.image(annotated, caption='준비물 탐지·등록 사진 비교 결과')
-            with st.expander('탐지 상세'):
-                st.dataframe(rows)
-@st.fragment(run_every=0.5)
-def dashboard():
-    if st.session_state.profile['day'] != today():
-        st.rerun()
-    for event in controller.poll():
-        action(event)
-    ready, error, last_frame = live.drain()
-    context = st.session_state.get('live_context')
-    playing = context is not None and context.state.playing
-    if playing and last_frame is not None and time.monotonic() - last_frame <= 2 and not error:
-        before = dict(checklist.confirmed)
-        checklist.apply_detections(ready)
-        if checklist.confirmed != before:
-            sync()
-    if error:
-        st.warning(error + ' 다시 시도하거나 직접 체크해주세요.')
-    elif playing and live.status()['영상 프레임 수'] == 0:
-        st.info('영상 연결은 됐지만 프레임을 기다리고 있어요. 계속되면 카메라 사용을 껐다 켜거나 사진·수동 확인을 이용하세요.')
-    elif playing and (last_frame is None or time.monotonic() - last_frame > 2):
-        st.info('영상을 분석하고 있어요. 최초 실행에는 모델 로딩 시간이 필요합니다.')
-    elif playing:
-        st.caption('● 실시간 분석 중')
-    st.subheader('오늘의 준비물')
-    total = len(checklist.items)
-    st.write(f'{len(checklist.confirmed)}/{total} 확인')
-    if total:
-        st.progress(len(checklist.confirmed) / total)
-    for item in checklist.items:
-        key = item['class_name']
-        source = checklist.confirmed.get(key)
-        displayed = st.session_state.setdefault('displayed_checks', {})
-        if 'mark_' + key not in st.session_state or displayed.get(key) != bool(source):
-            st.session_state['mark_' + key] = bool(source)
-            displayed[key] = bool(source)
-        st.checkbox('~~' + item['name'] + '~~' if source else item['name'],
-                    key='mark_' + key, on_change=toggle_item, args=(key,))
-        st.caption({'auto': '자동 인식', 'manual': '직접 확인'}.get(source, '미확인'))
-    excluded_items = [row for row in st.session_state.profile['items'] if row['excluded_on'] == today()]
-    if excluded_items:
-        st.caption('오늘 제외: ' + ', '.join(row['name'] for row in excluded_items) + ' · 준비물 관리에서 복원할 수 있습니다.')
-    if not total:
-        st.info('오늘 검사할 준비물이 없어요.')
-    elif checklist.state == 'READY':
-        st.success('모든 준비물을 확인했어요. 출발 준비 완료!')
-    else:
-        st.info('확인해주세요: ' + ', '.join(i['name'] for i in checklist.missing))
-    st.button('새 검사', key='new_check', on_click=action, args=('NEW',), type='primary')
-    st.caption('새 검사를 누르면 현재 확인 결과를 초기화합니다.')
-    connected = controller.serial is not None
-    booting = connected and time.monotonic() < controller.ready_at
-    st.caption('장치: ' + ('시뮬레이션' if controller.simulation else '부팅 중' if booting else '연결됨' if connected else '미연결'))
-    st.caption('LCD 전송 내용 · ' + controller.outputs['LCD 수신 확인'])
-    st.code('\n'.join(line.ljust(16) for line in controller.outputs['LCD']), language=None)
-    if controller.error:
-        st.warning(controller.error)
-    with st.expander('장치 상태 / 통신 기록'):
-        st.caption('수신 확인은 명령 처리 확인이며 LCD 연결이나 실제 화면을 측정한 결과는 아닙니다.')
-        st.json(live.status())
-        st.json(controller.outputs)
-        st.button('현재 상태 재전송', on_click=sync, disabled=not controller.simulation and (not connected or booting))
-        st.code('\n'.join(controller.log) or '통신 기록 없음')
-    with st.expander('이번 검사 확인 기록'):
-        st.dataframe(checklist.history)
-        st.download_button('기록 JSON 저장', json.dumps(checklist.history, ensure_ascii=False, indent=2), 'checkit_history.json', 'application/json')
+                st.caption('인식 중지 · 확인한 항목은 유지됩니다.')
+        except ImportError:
+            live.pause()
+            st.warning('실시간 카메라 의존성이 없습니다. requirements.txt를 설치한 뒤 다시 실행해주세요. 사진·수동 확인은 사용할 수 있습니다.')
+        with st.expander('사진으로 확인'):
+            st.caption('사진은 전체 이미지에서 즉시 확인합니다. 수동 해제한 종류는 영상에서 1초 이상 사라진 뒤 재확인하거나 직접 체크해주세요.')
+            source = st.radio('사진 입력 방식', ['이미지 업로드', '카메라 촬영'], horizontal=True)
+            if source == '이미지 업로드':
+                photo = st.file_uploader('사진 선택 (JPG / PNG / WEBP)', type=['jpg', 'jpeg', 'png', 'webp'])
+            else:
+                if camera_enabled:
+                    st.info('사진 촬영 전 위의 카메라 사용을 꺼주세요. 실시간 영상과 사진 촬영이 같은 카메라를 동시에 사용하지 않도록 합니다.')
+                    photo = None
+                else:
+                    photo = st.camera_input('준비물 사진 촬영')
+            if st.button('사진 분석 실행', disabled=not checklist.items, key='analyze'):
+                if photo is None:
+                    st.warning('먼저 사진을 촬영하거나 업로드하세요.')
+                else:
+                    try:
+                        with st.spinner('사진 분석 중…'):
+                            rows, annotated = st.session_state.detector.detect(photo.getvalue(), confidence)
+                            checklist.apply_detections(live.photo_allowed(row['class_name'] for row in rows))
+                            st.session_state.analysis = (rows, annotated)
+                            st.session_state.notice = '' if rows else '탐지 결과가 없습니다. 다른 사진이나 수동 확인을 사용하세요.'
+                        sync()
+                        st.rerun()
+                    except RuntimeError as exc:
+                        st.error(str(exc))
+                        controller.send_state('ERROR')
+            if st.session_state.notice:
+                st.info(st.session_state.notice)
+            if st.session_state.analysis is not None:
+                rows, annotated = st.session_state.analysis
+                st.image(annotated, caption='준비물 탐지·등록 사진 비교 결과')
+                with st.expander('탐지 상세'):
+                    st.dataframe(rows)
+        if st.session_state.profile['day'] != today():
+            st.rerun()
+        before_poll = (dict(checklist.confirmed), checklist.state, repr(controller.outputs), controller.error)
+        for event in controller.poll():
+            action(event)
+        ready, error, last_frame = live.drain()
+        context = st.session_state.get('live_context')
+        playing = context is not None and context.state.playing
+        if st.session_state.get('camera_enabled'):
+            camera_status = live.status()
+            st.caption(f"카메라 진단 · 연결: {'연결됨' if playing else '대기'} · 수신 프레임: {camera_status['영상 프레임 수']} · 분석: {'진행 중' if camera_status['분석 중'] else '대기'}")
+            if not playing:
+                st.info('검은 화면에서 계속 로딩되면 카메라 장치를 Integrated Camera로 선택하고, 카메라를 사용하는 다른 앱을 닫아주세요. 아래 ‘사진으로 확인 → 카메라 촬영’으로 영상 연결과 별개로 카메라가 열리는지 확인할 수 있습니다.')
+        if playing and last_frame is not None and time.monotonic() - last_frame <= 2 and not error:
+            before = dict(checklist.confirmed)
+            checklist.apply_detections(ready)
+            if checklist.confirmed != before:
+                sync()
+        if error:
+            st.warning(error + ' 다시 시도하거나 직접 체크해주세요.')
+        elif playing and live.status()['영상 프레임 수'] == 0:
+            st.info('영상 연결은 됐지만 프레임을 기다리고 있어요. 계속되면 카메라 사용을 껐다 켜거나 사진·수동 확인을 이용하세요.')
+        elif playing and (last_frame is None or time.monotonic() - last_frame > 2):
+            st.info('영상을 분석하고 있어요. 최초 실행에는 모델 로딩 시간이 필요합니다.')
+        elif playing:
+            st.caption('● 실시간 분석 중')
+        after_poll = (dict(checklist.confirmed), checklist.state, repr(controller.outputs), controller.error)
+        runner = st.session_state.weather_runner
+        future = getattr(runner, 'future', None)
+        weather_changed = future is not None and future.done()
+        weather_due = getattr(runner, 'token', None) is not None and future is None and time.monotonic() >= runner.next_due
+        if before_poll != after_poll or weather_changed or weather_due:
+            st.rerun()
+
+    with camera, card('camera_card'):
+        render_camera()
+
+    def dashboard():
+        st.subheader('오늘의 준비물')
+        total = len(checklist.items)
+        st.write(f'{len(checklist.confirmed)}/{total} 확인')
+        if total:
+            st.progress(len(checklist.confirmed) / total)
+        for item in checklist.items:
+            key = item['class_name']
+            source = checklist.confirmed.get(key)
+            displayed = st.session_state.setdefault('displayed_checks', {})
+            if 'mark_' + key not in st.session_state or displayed.get(key) != bool(source):
+                st.session_state['mark_' + key] = bool(source)
+                displayed[key] = bool(source)
+            st.checkbox('~~' + item['name'] + '~~' if source else item['name'],
+                        key='mark_' + key, on_change=toggle_item, args=(key,))
+            st.caption({'auto': '자동 인식', 'manual': '직접 확인'}.get(source, '미확인'))
+        excluded_items = [row for row in st.session_state.profile['items'] if row['excluded_on'] == today()]
+        if excluded_items:
+            st.caption('오늘 제외: ' + ', '.join(row['name'] for row in excluded_items) + ' · 준비물 관리에서 복원할 수 있습니다.')
+        if not total:
+            st.info('오늘 검사할 준비물이 없어요.')
+        elif checklist.state == 'READY':
+            st.success('모든 준비물을 확인했어요. 출발 준비 완료!')
+        else:
+            st.info('확인해주세요: ' + ', '.join(i['name'] for i in checklist.missing))
+        st.button('새 검사', key='new_check', on_click=action, args=('NEW',), type='primary')
+        st.caption('새 검사를 누르면 현재 확인 결과를 초기화합니다.')
+        connected = controller.serial is not None
+        booting = connected and time.monotonic() < controller.ready_at
+        st.caption('장치: ' + ('시뮬레이션' if controller.simulation else '부팅 중' if booting else '연결됨' if connected else '미연결'))
+        st.caption('LCD 전송 내용 · ' + controller.outputs['LCD 수신 확인'])
+        st.code('\n'.join(line.ljust(16) for line in controller.outputs['LCD']), language=None)
+        if controller.error:
+            st.warning(controller.error)
+        with st.expander('장치 상태 / 통신 기록'):
+            st.caption('수신 확인은 명령 처리 확인이며 LCD 연결이나 실제 화면을 측정한 결과는 아닙니다.')
+            st.json(live.status())
+            st.json(controller.outputs)
+            st.button('현재 상태 재전송', on_click=sync, disabled=not controller.simulation and (not connected or booting))
+            st.code('\n'.join(controller.log) or '통신 기록 없음')
+        with st.expander('이번 검사 확인 기록'):
+            st.dataframe(checklist.history)
+            st.download_button('기록 JSON 저장', json.dumps(checklist.history, ensure_ascii=False, indent=2), 'checkit_history.json', 'application/json')
 
 
-with items, card('checklist_card'):
-    dashboard()
+    with items, card('checklist_card'):
+        dashboard()
+
+render_workspace()
 with st.expander('내 물건 등록·관리'):
     render_personal(store, st.session_state.user_id, live.region, load_profile)
 st.caption('목록·설정·등록 사진은 이 PC에 저장합니다. 검사 영상·시험 사진은 별도 저장하지 않으며 확인 결과는 새 브라우저 세션에서 초기화됩니다.')

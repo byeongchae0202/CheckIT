@@ -58,8 +58,8 @@ def render_personal(store, user_id, region, refresh):
                 st.rerun()
             except (ValueError, OSError, sqlite3.Error) as exc:
                 st.error(str(exc))
-    st.markdown('**검사 구역에서 인식 시험**')
-    st.caption('실제 검사 구역에 물건을 놓고 장면을 촬영하세요. 등록 때와 다른 사진으로 시험한 뒤, 다른 물건에서는 잘못 인식되지 않는지도 확인해주세요.')
+    st.markdown('**전체 사진에서 인식 시험**')
+    st.caption('카메라에 물건이 보이도록 장면을 촬영하세요. 등록 때와 다른 사진으로 시험한 뒤, 다른 물건에서는 잘못 인식되지 않는지도 확인해주세요.')
     source = st.radio('시험 사진 입력', ['사진 업로드', '카메라 촬영'], key='personal_test_source_' + selected, horizontal=True)
     if source == '사진 업로드':
         photo = st.file_uploader('검사 장면 사진', type=['jpg', 'jpeg', 'png', 'webp'], key='personal_scene_' + selected)
@@ -79,8 +79,6 @@ def render_personal(store, user_id, region, refresh):
                 for row in matched:
                     x1, y1, x2, y2 = map(int, row['box'])
                     cv2.rectangle(image, (x1, y1), (x2, y2), (0, 180, 80), 3)
-                left, top, right, bottom = region
-                cv2.rectangle(image, (int(left * width), int(top * height)), (int(right * width), int(bottom * height)), (0, 190, 220), 2)
                 st.session_state[test_key] = (bool(matched), cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
                 refresh()
                 st.rerun()
@@ -88,11 +86,11 @@ def render_personal(store, user_id, region, refresh):
                 st.error('인식 시험 실패: ' + str(exc))
     if test_key in st.session_state:
         matched, image = st.session_state[test_key]
-        st.image(image, caption='초록색: 등록 물건 비교 결과 · 노란색: 검사 구역')
+        st.image(image, caption='초록색: 등록 물건 비교 결과')
         if matched:
-            st.success('검사 구역에서 인식됐어요. 다른 각도와 다른 물건도 시험한 뒤 자동 확인을 켜주세요.')
+            st.success('사진에서 인식됐어요. 다른 각도와 다른 물건도 시험한 뒤 자동 확인을 켜주세요.')
         else:
-            st.warning('검사 구역에서 확인하지 못했어요. 사진·각도·조명을 바꾸거나 직접 체크해주세요.')
+            st.warning('사진에서 확인하지 못했어요. 사진·각도·조명을 바꾸거나 직접 체크해주세요.')
     # 시험 후 새로 읽어 활성화 조건을 확인한다.
     current = next(row for row in store.profile(user_id)['items'] if row['class_name'] == selected)
     if st.button('자동 확인 끄기' if current['personal_enabled'] else '자동 확인 켜기',

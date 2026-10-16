@@ -57,7 +57,7 @@ class LiveRecognition:
         self.detector, self.clock = detector, clock
         self.lock = Lock()
         self.tracker = StablePresence()
-        self.region = (0.15, 0.15, 0.85, 0.85)
+        self.region = (0.0, 0.0, 1.0, 1.0)
         self.confidence = 0.4
         self.enabled = True
         self.revision = 0
@@ -148,9 +148,4 @@ class LiveRecognition:
                 with self.lock:
                     self.busy = False
         height, width = image.shape[:2]
-        left, top, right, bottom = region
-        cv2.rectangle(image, (int(left * width), int(top * height)),
-                      (int(right * width), int(bottom * height)), (0, 190, 220), 3)
-        cv2.putText(image, 'CHECK AREA', (int(left * width), max(20, int(top * height) - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 190, 220), 2)
         return av.VideoFrame.from_ndarray(image, format='bgr24')
