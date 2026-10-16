@@ -130,14 +130,14 @@ class ArduinoTests(unittest.TestCase):
             self.assertTrue(c.send_state(state, count))
             self.assertEqual(c.state, state)
             self.assertEqual(c.outputs['서보 각도'], servo_angle_for_state(state))
-        self.assertEqual(servo_angle_for_state('READY'), 150)
-        self.assertEqual(servo_angle_for_state('SCANNING'), 30)
-        self.assertEqual(servo_angle_for_state('MISSING'), 30)
+        self.assertEqual(servo_angle_for_state('READY'), 30)
+        self.assertEqual(servo_angle_for_state('SCANNING'), 150)
+        self.assertEqual(servo_angle_for_state('MISSING'), 150)
         self.assertEqual(servo_angle_for_state('IDLE'), 90)
         self.assertEqual(servo_angle_for_state('EMPTY'), 90)
         self.assertEqual(servo_angle_for_state('ERROR'), 90)
         c.send_state('READY')
-        self.assertEqual(c.outputs['서보 각도'], 150)
+        self.assertEqual(c.outputs['서보 각도'], 30)
         self.assertEqual(c.outputs['초록 LED'], '켜짐')
 
     def test_serial_ack_and_partial_lines(self):

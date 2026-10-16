@@ -11,7 +11,7 @@ bool lcdPresent = false;
 
 const byte START_PIN = 2, CHECK_PIN = 3, SERVO_PIN = 5;
 const byte GREEN_PIN = 6, RED_PIN = 7, BUZZER_PIN = 8;
-const byte SERVO_MISSING_ANGLE = 30, SERVO_CENTER_ANGLE = 90, SERVO_READY_ANGLE = 150;
+const byte SERVO_MISSING_ANGLE = 150, SERVO_CENTER_ANGLE = 90, SERVO_READY_ANGLE = 30;
 Servo signServo;
 enum State { IDLE, SCANNING, MISSING, READY, ERROR_STATE, EMPTY_STATE };
 State state = IDLE;

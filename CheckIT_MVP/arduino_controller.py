@@ -6,9 +6,9 @@ from config import BAUDRATE, ACK_TIMEOUT
 
 def servo_angle_for_state(state):
     if state == 'READY':
-        return 150
-    if state in ('SCANNING', 'MISSING'):
         return 30
+    if state in ('SCANNING', 'MISSING'):
+        return 150
     return 90
 
 

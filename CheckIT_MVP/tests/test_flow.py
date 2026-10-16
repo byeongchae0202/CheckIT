@@ -26,7 +26,7 @@ class FlowTests(unittest.TestCase):
         hardware.send_state(checklist.finish(), len(checklist.missing))
         self.assertIn('TX MISSING,2', hardware.log)
         self.assertEqual(hardware.outputs['빨간 LED'], '켜짐')
-        self.assertEqual(hardware.outputs['서보 각도'], 30)
+        self.assertEqual(hardware.outputs['서보 각도'], 150)
 
 
 if __name__ == '__main__':
