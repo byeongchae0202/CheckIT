@@ -9,7 +9,7 @@ from checklist import Checklist
 from detector import Detector
 from arduino_controller import ArduinoController
 from realtime import LiveRecognition
-from profiles import ProfileStore, SUPPORTED, today, recognition_for_name
+from profiles import ProfileStore, SUPPORTED, today
 from config import PROFILE_DB, get_weather_key
 from weather import WeatherClient, WeatherRunner, DEFAULT_WEATHER, MODES, request_token, weather_message
 from regions import load_regions, RegionIndex
@@ -256,29 +256,33 @@ with st.sidebar:
                     st.error(str(exc))
         st.markdown('[기상청 단기예보 조회서비스·지역 격자 안내](https://www.data.go.kr/data/15084084/openapi.do)')
     with st.expander('준비물 관리'):
-        st.caption('삭제하면 목록에서 사라집니다. 오늘만 제외한 항목은 한국 시간 기준 다음 날 다시 포함됩니다.')
-        item_name = st.text_input('준비물 이름', max_chars=60, key='new_item_name',
-                                  help='이름을 입력한 뒤 Enter를 누르거나 다른 곳을 클릭하면 지원 여부를 확인합니다.')
-        suggested = recognition_for_name(item_name)
-        if suggested:
-            st.success(f'YOLO 지원 목록에 있어요: {SUPPORTED[suggested]} ({suggested}). 아래 확인 방식에서 해당 자동 인식을 선택해주세요.')
-        elif item_name.strip():
-            st.info('입력한 이름과 일치하는 YOLO 지원 종류를 찾지 못했어요. 아래 목록에서 다른 이름으로 있는지 확인하거나, 개인 사진 등록·직접 체크를 이용해주세요.')
+        st.caption('날짜를 선택하고 그날 준비할 물건을 하나씩 추가하세요. 추가한 항목은 선택한 날짜에만 오늘의 체크리스트에 나타납니다.')
+        schedule_date = st.date_input('준비 날짜', value=datetime.fromisoformat(today()).date(),
+                                      min_value=datetime.fromisoformat(today()).date(),
+                                      key='new_item_date_' + st.session_state.user_id)
+        schedule_day = schedule_date.isoformat()
         with st.form('add_item', clear_on_submit=True, enter_to_submit=False):
+            item_name = st.text_input('준비물 이름', max_chars=60, key='new_item_name')
             lcd_name = st.text_input('LCD 영문 이름', max_chars=16, key='new_lcd_name')
             recognition = st.selectbox('확인 방식', [None, *SUPPORTED],
                                        format_func=lambda key: '직접 체크' if key is None else SUPPORTED[key] + ' 자동 인식 (' + key + ')')
             st.caption('사람을 제외한 YOLO 기본 모델의 79종을 선택할 수 있습니다. 같은 종류의 다른 물건도 인식하며, 지갑·열쇠 등 목록에 없는 물건은 개인 사진 등록을 이용해주세요.')
             st.caption('개인 물건 사진은 메인 화면 아래의 내 물건 등록·관리에서 등록할 수 있습니다.')
-            if suggested and recognition != suggested:
-                st.caption('이름 안내는 추천입니다. 실제 추가는 위에서 선택한 확인 방식으로 저장됩니다.')
             if st.form_submit_button('준비물 추가'):
                 try:
-                    store.add_item(st.session_state.user_id, item_name, lcd_name, recognition)
+                    store.add_item(st.session_state.user_id, item_name, lcd_name, recognition, schedule_day)
                     load_profile()
                     st.rerun()
                 except (ValueError, OSError, sqlite3.Error) as exc:
                     st.error(str(exc))
+        scheduled_items = store.scheduled_items(st.session_state.user_id, schedule_day)
+        if scheduled_items:
+            st.caption(f'{schedule_date:%m월 %d일}에 표시할 준비물')
+            for scheduled in scheduled_items:
+                st.write(scheduled['name'])
+                if st.button('삭제', key='cancel_scheduled_' + scheduled['class_name']):
+                    store.delete_item(st.session_state.user_id, scheduled['class_name'])
+                    st.rerun()
         components.html('''<script>
         // 이 입력 영역의 텍스트 필드만 처리한다. 한글 조합 Enter는 유지한다.
         const doc = window.parent.document;

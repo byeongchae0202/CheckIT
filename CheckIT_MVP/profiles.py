@@ -120,6 +120,8 @@ class ProfileStore:
             user = db.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
             if user is None:
                 raise ValueError('사용자를 찾을 수 없습니다.')
+            db.execute('DELETE FROM items WHERE user_id=? AND active_on IS NOT NULL AND active_on<?',
+                       (user_id, self.day()))
             rows = [dict(row) for row in db.execute(
                 'SELECT * FROM items WHERE user_id=? AND (active_on IS NULL OR active_on=?) ORDER BY position', (user_id, self.day()))]
         return {'id': user_id, 'name': user['name'], 'settings': json.loads(user['settings']),
@@ -128,7 +130,17 @@ class ProfileStore:
     def active_items(self, profile):
         return [row for row in profile['items'] if row['excluded_on'] != profile['day']]
 
-    def add_item(self, user_id, name, lcd_name, class_name=None):
+    def scheduled_items(self, user_id, day=None):
+        with self.connect() as db:
+            if day is None:
+                return [dict(row) for row in db.execute(
+                    'SELECT class_name,name,active_on FROM items WHERE user_id=? AND active_on>? ORDER BY active_on,position',
+                    (user_id, self.day()))]
+            return [dict(row) for row in db.execute(
+                'SELECT class_name,name,active_on FROM items WHERE user_id=? AND active_on=? ORDER BY position',
+                (user_id, day))]
+
+    def add_item(self, user_id, name, lcd_name, class_name=None, active_on=None):
         name, lcd_name = name.strip(), lcd_name.strip().upper()
         if not name or len(name) > 60:
             raise ValueError('준비물 이름을 1~60자로 입력해주세요.')
@@ -136,6 +148,13 @@ class ProfileStore:
             raise ValueError('LCD 이름은 영문·숫자·공백·밑줄·하이픈으로 1~16자 입력해주세요.')
         if class_name is not None and class_name not in SUPPORTED:
             raise ValueError('지원하지 않는 자동 인식 종류입니다.')
+        if active_on is not None:
+            try:
+                parsed_day = datetime.strptime(active_on, '%Y-%m-%d').date().isoformat()
+            except (TypeError, ValueError) as exc:
+                raise ValueError('표시 날짜를 YYYY-MM-DD 형식으로 입력해주세요.') from exc
+            if parsed_day != active_on or parsed_day < self.day():
+                raise ValueError('오늘 또는 미래 날짜를 선택해주세요.')
         key = class_name or 'manual_' + uuid4().hex
         try:
             with self.connect() as db:
@@ -146,11 +165,11 @@ class ProfileStore:
                 existing = db.execute('SELECT active_on FROM items WHERE user_id=? AND class_name=?', (user_id, key)).fetchone()
                 if existing and existing['active_on'] is not None:
                     # 날씨로 임시 추가했던 우산을 사용자가 정식 목록에 추가한다.
-                    db.execute('UPDATE items SET name=?,lcd_name=?,automatic=?,active_on=NULL,excluded_on=NULL WHERE user_id=? AND class_name=?',
-                               (name, lcd_name, int(class_name is not None), user_id, key))
+                    db.execute('UPDATE items SET name=?,lcd_name=?,automatic=?,active_on=?,excluded_on=NULL WHERE user_id=? AND class_name=?',
+                               (name, lcd_name, int(class_name is not None), active_on, user_id, key))
                 else:
-                    db.execute('INSERT INTO items (user_id,class_name,name,lcd_name,automatic,position,excluded_on) VALUES (?, ?, ?, ?, ?, ?, NULL)',
-                               (user_id, key, name, lcd_name, int(class_name is not None), position))
+                    db.execute('INSERT INTO items (user_id,class_name,name,lcd_name,automatic,position,excluded_on,active_on) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)',
+                               (user_id, key, name, lcd_name, int(class_name is not None), position, active_on))
                 db.execute('DELETE FROM daily_exclusions WHERE user_id=? AND day=? AND class_name=?', (user_id, self.day(), key))
         except sqlite3.IntegrityError as exc:
             raise ValueError('이미 등록된 자동 인식 종류이거나 사용자가 없습니다.') from exc
@@ -158,8 +177,8 @@ class ProfileStore:
 
     def delete_item(self, user_id, key):
         with self.connect() as db:
-            row = db.execute('SELECT name FROM items WHERE user_id=? AND class_name=?', (user_id, key)).fetchone()
-            if row and (key == 'umbrella' or row['name'] == '우산'):
+            row = db.execute('SELECT name,active_on FROM items WHERE user_id=? AND class_name=?', (user_id, key)).fetchone()
+            if row and row['active_on'] in (None, self.day()) and (key == 'umbrella' or row['name'] == '우산'):
                 db.execute('INSERT OR IGNORE INTO daily_exclusions VALUES (?, ?, ?)', (user_id, self.day(), 'umbrella'))
             db.execute('DELETE FROM items WHERE user_id=? AND class_name=?', (user_id, key))
 

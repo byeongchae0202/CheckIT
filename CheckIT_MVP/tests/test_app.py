@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+from datetime import date
 import time
 import unittest
 import tempfile
@@ -96,10 +97,44 @@ class AppTests(unittest.TestCase):
             self.assertEqual(len(app.session_state.checklist.items), 3)
             with patch('profiles.today', return_value='2099-01-02'):
                 app.run()
-                self.assertEqual(len(app.session_state.checklist.items), 4)
+                self.assertEqual(len(app.session_state.checklist.items), 3)
                 self.assertFalse(app.session_state.checklist.confirmed)
             app.button(key='delete_book').click().run()
             self.assertNotIn('book', {row['class_name'] for row in app.session_state.checklist.items})
+            self.assertFalse(app.exception)
+
+    def test_future_item_is_shown_only_on_selected_day(self):
+        from streamlit.testing.v1 import AppTest
+        from profiles import ProfileStore
+        day = ['2026-10-16']
+        context = SimpleNamespace(state=SimpleNamespace(playing=False))
+        with patch('profiles.today', side_effect=lambda: day[0]), patch('streamlit_webrtc.webrtc_streamer', return_value=context):
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run()
+            app.date_input(key='new_item_date_default').set_value(date(2026, 10, 18)).run()
+            app.text_input(key='new_item_name').set_value('bicycle').run()
+            self.assertFalse(any('YOLO 지원 목록에 있어요' in element.value for element in app.success))
+            self.assertFalse(any('일치하는 YOLO 지원 종류를 찾지 못했어요' in element.value for element in app.info))
+            app.text_input(key='new_item_name').set_value('여권')
+            app.text_input(key='new_lcd_name').set_value('PASSPORT')
+            next(button for button in app.button if button.label == '준비물 추가').click().run()
+            self.assertFalse(app.exception)
+
+            app.text_input(key='new_item_name').set_value('충전기')
+            app.text_input(key='new_lcd_name').set_value('CHARGER')
+            next(button for button in app.button if button.label == '준비물 추가').click().run()
+
+            store = ProfileStore(self.db_path)
+            scheduled = store.scheduled_items('default', '2026-10-18')
+            self.assertEqual({row['name'] for row in scheduled}, {'여권', '충전기'})
+            scheduled_keys = {row['class_name'] for row in scheduled}
+            self.assertTrue(scheduled_keys.isdisjoint({row['class_name'] for row in app.session_state.checklist.items}))
+
+            day[0] = '2026-10-17'
+            app.run()
+            self.assertTrue(scheduled_keys.isdisjoint({row['class_name'] for row in app.session_state.checklist.items}))
+            day[0] = '2026-10-18'
+            app.run()
+            self.assertTrue(scheduled_keys.issubset({row['class_name'] for row in app.session_state.checklist.items}))
             self.assertFalse(app.exception)
 
     def test_weather_adds_today_only_and_failure_is_visible(self):

@@ -59,6 +59,30 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.add_item('default', '지갑', 'WALLET')
 
+    def test_scheduled_item_appears_only_on_selected_day(self):
+        key = self.store.add_item('default', '여권', 'PASSPORT', active_on='2026-10-18')
+        self.assertNotIn(key, {row['class_name'] for row in self.store.profile('default')['items']})
+        self.assertEqual(self.store.scheduled_items('default', '2026-10-18')[0]['active_on'], '2026-10-18')
+        self.store.add_item('default', '충전기', 'CHARGER', active_on='2026-10-18')
+        self.assertEqual(len(self.store.scheduled_items('default', '2026-10-18')), 2)
+        self.store.add_item('default', '배낭', 'BACKPACK', 'backpack', active_on='2026-10-19')
+        self.assertEqual(len(self.store.scheduled_items('default', '2026-10-18')), 2)
+        self.day[0] = '2026-10-17'
+        self.assertNotIn(key, {row['class_name'] for row in self.store.profile('default')['items']})
+        self.day[0] = '2026-10-18'
+        self.assertIn(key, {row['class_name'] for row in self.store.active_items(self.store.profile('default'))})
+        self.day[0] = '2026-10-19'
+        self.assertNotIn(key, {row['class_name'] for row in self.store.profile('default')['items']})
+        self.assertEqual(self.store.scheduled_items('default', '2026-10-18'), [])
+        self.store.add_item('default', '여권', 'PASSPORT')
+        self.assertIn('여권', {row['name'] for row in self.store.profile('default')['items']})
+
+    def test_scheduled_item_rejects_invalid_or_past_dates(self):
+        for value in ('not-a-date', '2026-10-15', '2026-2-3'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.store.add_item('default', '여권', 'PASSPORT', active_on=value)
+        self.assertEqual(len(self.store.profile('default')['items']), 3)
+
     def test_settings_isolation_and_reload(self):
         other = self.store.create_user('사용자2')
         settings = {'confidence': .7, 'roi_x': [20, 70], 'roi_y': [10, 90]}
