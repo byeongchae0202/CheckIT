@@ -42,6 +42,43 @@ class AppTests(unittest.TestCase):
                 self.assertFalse(app.session_state.live.enabled)
             self.assertFalse(app.exception)
 
+    def test_video_and_status_poll_share_the_periodic_fragment(self):
+        import streamlit as st
+        from streamlit.testing.v1 import AppTest
+        context = SimpleNamespace(state=SimpleNamespace(playing=False))
+        fragments, calls = {}, {}
+        active_fragments = []
+        fragment = st.fragment
+
+        def register_fragment(func=None, **options):
+            def decorate(function):
+                fragments[function.__name__] = options.get('run_every')
+                def run_fragment():
+                    active_fragments.append(function.__name__)
+                    try:
+                        return function()
+                    finally:
+                        active_fragments.pop()
+                return fragment(run_fragment, **options)
+            return decorate(func) if func is not None else decorate
+
+        def stream_video(**options):
+            calls['video'] = tuple(active_fragments)
+            return context
+
+        def poll_device():
+            calls['poll'] = tuple(active_fragments)
+            return []
+
+        with patch('streamlit.fragment', side_effect=register_fragment), \
+                patch('streamlit_webrtc.webrtc_streamer', side_effect=stream_video), \
+                patch('arduino_controller.ArduinoController.poll', side_effect=poll_device):
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run()
+            self.assertFalse(app.exception)
+            self.assertEqual(fragments['camera_panel'], .5)
+            self.assertTrue(calls['video'])
+            self.assertEqual(calls['video'], calls['poll'])
+
     def test_personal_enable_detection_and_deletion(self):
         from streamlit.testing.v1 import AppTest
         from profiles import ProfileStore

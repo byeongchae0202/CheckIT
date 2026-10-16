@@ -335,7 +335,7 @@ def weather_summary():
         st.caption(settings['region_name'] + ' · 조회 ' + result.checked_at[11:16] + ' · ' + ' / '.join(result.references) + ' · 출처: 기상청')
 
 
-# 연결 위젯은 유지하고 카메라 상태만 주기 갱신한다.
+# WebRTC 위젯과 상태 확인은 같은 fragment에서 실행 횟수를 맞춘다.
 def render_workspace():
     with card('weather_card'):
         st.markdown('**오늘의 날씨**')
@@ -421,7 +421,6 @@ def render_workspace():
                 with st.expander('탐지 상세'):
                     st.dataframe(rows)
 
-    @st.fragment(run_every=0.5)
     def poll_camera():
         if st.session_state.profile['day'] != today():
             st.rerun()
@@ -457,9 +456,13 @@ def render_workspace():
         if before_poll != after_poll or weather_changed or weather_due:
             st.rerun()
 
-    with camera, card('camera_card'):
+    @st.fragment(run_every=0.5)
+    def camera_panel():
         render_camera()
         poll_camera()
+
+    with camera, card('camera_card'):
+        camera_panel()
 
     def dashboard():
         st.subheader('오늘의 준비물')
