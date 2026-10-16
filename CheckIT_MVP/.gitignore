@@ -1,0 +1,4 @@
+data/profiles.sqlite3*
+__pycache__/
+.venv/
+local_settings.py

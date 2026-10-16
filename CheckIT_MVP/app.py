@@ -1,0 +1,458 @@
+import json
+import time
+import sqlite3
+import inspect
+from datetime import datetime
+import streamlit as st
+from checklist import Checklist
+from detector import Detector
+from arduino_controller import ArduinoController
+from realtime import LiveRecognition
+from profiles import ProfileStore, SUPPORTED, today
+from config import PROFILE_DB, get_weather_key
+from weather import WeatherClient, WeatherRunner, DEFAULT_WEATHER, MODES, request_token, weather_message
+from regions import load_regions, RegionIndex
+from personal_ui import render_personal
+
+st.set_page_config(page_title='CheckIT · 외출 준비', page_icon='🎒', layout='wide', initial_sidebar_state='collapsed')
+st.markdown('''<style>
+.block-container {max-width: 1440px; padding-top: 2rem; padding-bottom: 2rem;}
+h1 {letter-spacing: -.04em;}
+h2, h3 {letter-spacing: -.025em;}
+.st-key-weather_card, .st-key-camera_card, .st-key-checklist_card {background: #fff; border-radius: 14px;}
+[data-testid="stCheckbox"] {min-height: 44px;}
+[data-testid="stButton"] button {min-height: 44px; border-radius: 9px;}
+[data-testid="stAlert"] {border-radius: 10px;}
+@media (max-width: 640px) {
+  .block-container {padding: 1rem;}
+  h1 {font-size: 2rem;}
+}
+</style>''', unsafe_allow_html=True)
+
+
+def card(name):
+    options = {'border': True}
+    if 'key' in inspect.signature(st.container).parameters:
+        options['key'] = name
+    return st.container(**options)
+if 'checklist' not in st.session_state:
+    st.session_state.checklist = Checklist()
+    st.session_state.controller = ArduinoController()
+    st.session_state.detector = Detector()
+    st.session_state.analysis = None
+    st.session_state.notice = ''
+checklist = st.session_state.checklist
+controller = st.session_state.controller
+if 'live' not in st.session_state:
+    st.session_state.live = LiveRecognition(st.session_state.detector)
+live = st.session_state.live
+if 'weather_runner' not in st.session_state:
+    st.session_state.weather_runner = WeatherRunner()
+try:
+    if 'profiles' not in st.session_state:
+        st.session_state.profiles = ProfileStore(PROFILE_DB)
+    store = st.session_state.profiles
+except (OSError, sqlite3.Error) as exc:
+    st.error(f'사용자 저장소를 열지 못했습니다. 저장 경로와 권한을 확인해주세요. ({exc})')
+    st.stop()
+
+
+def sync():
+    controller.send_checklist(checklist.state, checklist.items, checklist.confirmed)
+
+
+def action(event):
+    if event == 'START':
+        if checklist.start():
+            live.reset()
+            sync()
+    elif event == 'CHECK' and checklist.state == 'SCANNING':
+        checklist.finish()
+        sync()
+    elif event == 'NEW':
+        checklist.start(force=True)
+        live.reset()
+        st.session_state.analysis = None
+        st.session_state.notice = ''
+        sync()
+
+
+def toggle_item(key):
+    if not st.session_state['mark_' + key]:
+        live.block(key)
+    checklist.mark(key, 'manual', st.session_state['mark_' + key])
+    sync()
+
+
+def load_profile(reset=False):
+    profile = store.profile(st.session_state.user_id)
+    live.pause()
+    checklist.set_items(store.active_items(profile), reset=reset)
+    live.reset()
+    st.session_state.detector.set_personal_references(store.reference_photos(st.session_state.user_id, active_only=True))
+    st.session_state.profile = profile
+    st.session_state.analysis = None
+    st.session_state.notice = ''
+    st.session_state.displayed_checks = {}
+    if reset:
+        for key, value in profile['settings'].items():
+            st.session_state[key] = tuple(value) if key.startswith('roi_') else value
+    sync()
+
+
+def save_preferences():
+    try:
+        store.save_settings(st.session_state.user_id, {
+            key: st.session_state[key] for key in ('confidence', 'roi_x', 'roi_y')})
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        st.session_state.preference_error = str(exc)
+    else:
+        st.session_state.preference_error = ''
+
+
+def save_region_preference(axis, widget_key):
+    st.session_state[axis] = tuple(st.session_state[widget_key])
+    save_preferences()
+
+
+def select_weather_region(settings, suffix):
+    try:
+        index = load_regions()
+    except (OSError, ValueError):
+        st.error('지역 목록을 읽지 못했습니다. 격자 직접 입력으로 설정하거나 지역 데이터 파일을 확인해주세요.')
+        return None
+    saved = index.by_code.get(settings.get('region_code', ''))
+    if settings.get('region_code') and saved is None:
+        st.warning('저장된 지역이 지역 목록에 없습니다. 다시 선택해주세요.')
+    provinces = [None, *index.provinces()]
+    province = st.selectbox('시·도', provinces,
+        index=provinces.index(saved['province']) if saved else 0,
+        format_func=lambda value: value or '시·도를 선택해주세요', key='w_province_' + suffix)
+    if province is None:
+        return None
+    districts = index.districts(province)
+    if districts:
+        choices = [None, '', *districts]
+        default = saved['district'] if saved and saved['province'] == province else None
+        district = st.selectbox('시·군·구', choices, index=choices.index(default) if default in choices else 0,
+            format_func=lambda value: '시·군·구를 선택해주세요' if value is None else value or '시·도 대표 지점',
+            key='w_district_' + suffix + '_' + province)
+        if district is None:
+            return None
+    else:
+        district = ''
+    towns = index.towns(province, district)
+    choices = [None, '', *towns]
+    default = saved['town'] if saved and (saved['province'], saved['district']) == (province, district) else None
+    town = st.selectbox('읍·면·동', choices, index=choices.index(default) if default in choices else 0,
+        format_func=lambda value: '읍·면·동을 선택해주세요' if value is None else value or '대표 지점',
+        key='w_town_' + suffix + '_' + province + '_' + district)
+    if town is None:
+        return None
+    record = index.resolve(province, district, town)
+    if record is None:
+        st.warning('해당 지역의 대표 격자가 없습니다. 다른 지역을 선택해주세요.')
+    else:
+        st.caption('선택한 지역: ' + RegionIndex.name(record) + ' · 저장하면 적용됩니다.')
+    return record
+
+
+if checklist.state == 'IDLE':
+    action('START')
+st.title('🎒 CheckIT')
+st.caption('빠뜨림 없이, 가볍게 출발하세요. 카메라로 확인하거나 직접 체크할 수 있어요.')
+st.caption('지역·준비물·사용자 추가 설정은 왼쪽 메뉴(☰)에서 변경할 수 있어요.')
+users = store.users()
+user_names = {user['id']: user['name'] for user in users}
+if 'pending_user' in st.session_state:
+    st.session_state.user_id = st.session_state.pop('pending_user')
+st.selectbox('사용자 선택', list(user_names), format_func=user_names.get, key='user_id')
+previous = st.session_state.get('profile')
+if previous is None or previous['id'] != st.session_state.user_id or previous['day'] != today():
+    load_profile(reset=True)
+else:
+    latest = store.profile(st.session_state.user_id)
+    if latest['items'] != previous['items']:
+        load_profile()
+# Windows 임베디드 Python에서도 별도 시간대 데이터 없이 한국 날짜를 표시한다.
+from datetime import timezone, timedelta
+st.caption(datetime.now(timezone(timedelta(hours=9))).strftime('%Y년 %m월 %d일') + ' · Asia/Seoul')
+with st.sidebar:
+    st.header('장치 설정')
+    mode = st.radio('동작 모드', ['시뮬레이션', '실제 Arduino'])
+    if mode == '시뮬레이션' and not controller.simulation:
+        controller.use_simulation()
+        sync()
+    elif mode == '실제 Arduino' and controller.simulation:
+        controller.disconnect()
+        controller.simulation = False
+    if mode == '실제 Arduino':
+        port = st.text_input('COM 포트', 'COM3')
+        if st.button('연결 / 재연결'):
+            controller.connect(port.strip())
+        if st.button('연결 해제'):
+            controller.disconnect()
+    confidence = st.slider('AI 신뢰도 기준', 0.05, 0.95, step=0.05, key='confidence', on_change=save_preferences)
+    st.caption('장치가 연결되지 않아도 준비물을 직접 확인할 수 있습니다.')
+    if st.session_state.get('preference_error'):
+        st.warning('설정 저장 실패: ' + st.session_state.preference_error)
+    with st.expander('사용자 추가'):
+        with st.form('new_user'):
+            user_name = st.text_input('새 사용자 이름', max_chars=40, key='new_user_name')
+            if st.form_submit_button('사용자 만들기'):
+                try:
+                    st.session_state.pending_user = store.create_user(user_name)
+                    st.rerun()
+                except (ValueError, OSError, sqlite3.Error) as exc:
+                    st.error(str(exc))
+    with st.expander('날씨·우산 설정'):
+        weather_settings = dict(DEFAULT_WEATHER, **st.session_state.profile['settings'].get('weather', {}))
+        weather_suffix = st.session_state.user_id
+        region_method = st.radio('지역 설정 방식', ['지역 선택', '격자 직접 입력'],
+            index=0 if weather_settings['region_code'] or not weather_settings['region_name'] else 1,
+            key='w_region_method_' + weather_suffix)
+        selected_region = select_weather_region(weather_settings, weather_suffix) if region_method == '지역 선택' else None
+        with st.form('weather_settings_' + weather_suffix):
+            auto_umbrella = st.checkbox('우산 자동 추가', value=weather_settings['enabled'], key='w_enabled_' + weather_suffix)
+            if region_method == '격자 직접 입력':
+                region_name = st.text_input('날씨 지역 이름', value=weather_settings['region_name'], max_chars=60, key='w_region_' + weather_suffix)
+                st.caption('지역 이름은 표시용이며 조회 지역은 입력한 격자 X·Y로 결정됩니다.')
+                nx = st.number_input('예보 격자 X', min_value=1, max_value=149, value=weather_settings['nx'], step=1, key='w_nx_' + weather_suffix)
+                ny = st.number_input('예보 격자 Y', min_value=1, max_value=253, value=weather_settings['ny'], step=1, key='w_ny_' + weather_suffix)
+            weather_mode = st.selectbox('비 판단 기준', list(MODES), index=list(MODES).index(weather_settings['mode']), format_func=MODES.get, key='w_mode_' + weather_suffix)
+            use_pop = st.checkbox('예보 강수확률도 기준에 포함', value=weather_settings['use_pop'], key='w_pop_' + weather_suffix)
+            pop_threshold = st.slider('우산 추가 강수확률 (%)', 10, 100, value=weather_settings['pop_threshold'], step=10, key='w_threshold_' + weather_suffix)
+            if st.form_submit_button('날씨 설정 저장'):
+                try:
+                    if region_method == '지역 선택':
+                        if selected_region is None:
+                            raise ValueError('조회할 지역을 먼저 선택해주세요.')
+                        region_name, nx, ny = RegionIndex.name(selected_region), selected_region['nx'], selected_region['ny']
+                    store.save_weather(st.session_state.user_id, {'enabled': auto_umbrella, 'region_name': region_name,
+                        'nx': int(nx), 'ny': int(ny), 'mode': weather_mode, 'use_pop': use_pop, 'pop_threshold': pop_threshold,
+                        'region_code': selected_region['code'] if region_method == '지역 선택' else ''})
+                    st.session_state.profile = store.profile(st.session_state.user_id)
+                    st.rerun()
+                except (ValueError, OSError, sqlite3.Error) as exc:
+                    st.error(str(exc))
+        st.markdown('[기상청 단기예보 조회서비스·지역 격자 안내](https://www.data.go.kr/data/15084084/openapi.do)')
+    with st.expander('준비물 관리'):
+        st.caption('삭제하면 목록에서 사라집니다. 오늘만 제외한 항목은 한국 시간 기준 다음 날 다시 포함됩니다.')
+        with st.form('add_item', clear_on_submit=True):
+            item_name = st.text_input('준비물 이름', max_chars=60, key='new_item_name')
+            lcd_name = st.text_input('LCD 영문 이름', max_chars=16, key='new_lcd_name')
+            recognition = st.selectbox('확인 방식', [None, *SUPPORTED],
+                                       format_func=lambda key: '직접 체크' if key is None else SUPPORTED[key] + ' 자동 인식')
+            st.caption('개인 물건 사진은 메인 화면 아래의 내 물건 등록·관리에서 등록할 수 있습니다.')
+            if st.form_submit_button('준비물 추가'):
+                try:
+                    store.add_item(st.session_state.user_id, item_name, lcd_name, recognition)
+                    load_profile()
+                    st.rerun()
+                except (ValueError, OSError, sqlite3.Error) as exc:
+                    st.error(str(exc))
+        for managed in st.session_state.profile['items']:
+            item_key = managed['class_name']
+            excluded = managed['excluded_on'] == today()
+            st.write(managed['name'] + (' · 오늘 제외' if excluded else ''))
+            exclude_col, delete_col = st.columns(2)
+            try:
+                if exclude_col.button('오늘 복원' if excluded else '오늘만 제외', key='exclude_' + item_key):
+                    store.exclude(st.session_state.user_id, item_key, not excluded)
+                    load_profile()
+                    st.rerun()
+                if delete_col.button('삭제', key='delete_' + item_key):
+                    store.delete_item(st.session_state.user_id, item_key)
+                    load_profile()
+                    st.rerun()
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                st.error(str(exc))
+
+
+@st.fragment(run_every=1)
+def weather_summary():
+    if st.session_state.profile['day'] != today():
+        st.rerun()
+    settings = dict(DEFAULT_WEATHER, **st.session_state.profile['settings'].get('weather', {}))
+    service_key = get_weather_key()
+    runner = st.session_state.weather_runner
+    token = request_token(st.session_state.user_id, today(), settings, service_key) if settings['region_name'] and service_key else None
+    force = st.button('날씨 새로고침', key='refresh_weather', disabled=token is None)
+    result, error, loading = runner.tick(token, lambda: WeatherClient().fetch(settings, service_key), force=force)
+    if not settings['region_name']:
+        st.info('날씨 지역을 설정해주세요. 사이드바의 날씨·우산 설정에서 변경할 수 있습니다.')
+    elif not service_key:
+        st.info('날씨 서비스가 아직 준비되지 않았어요. 우산 필요 여부는 직접 확인해주세요.')
+    elif loading:
+        st.info('날씨를 확인하고 있어요. 준비물 확인은 계속할 수 있습니다.')
+    elif error:
+        st.warning('날씨 조회 실패: ' + error + ' 비가 오지 않는다는 뜻은 아닙니다. 우산 필요 여부를 직접 확인해주세요.')
+    elif result is not None:
+        marker = (token, result.checked_at)
+        if settings['enabled'] and result.rain and st.session_state.get('weather_applied') != marker:
+            try:
+                changed = store.ensure_weather_umbrella(st.session_state.user_id, today())
+                st.session_state.weather_applied = marker
+                if changed:
+                    load_profile()
+                    st.rerun()
+            except (ValueError, OSError, sqlite3.Error):
+                st.warning('날씨 조건은 충족했지만 우산을 저장하지 못했습니다. 목록을 직접 확인해주세요.')
+        profile = st.session_state.profile
+        st.info(weather_message(result, settings))
+        excluded = any(row['class_name'] == 'umbrella' and row['excluded_on'] == today() for row in profile['items'])
+        if excluded:
+            st.info('우산은 오늘 검사에서 제외했어요. 날씨가 갱신되어도 다시 추가하지 않습니다.')
+        elif result.rain and not settings['enabled']:
+            st.caption('우산 자동 추가는 꺼져 있어요. 준비물 목록에서 직접 확인해주세요.')
+        st.caption(settings['region_name'] + ' · 조회 ' + result.checked_at[11:16] + ' · ' + ' / '.join(result.references) + ' · 출처: 기상청')
+
+
+with card('weather_card'):
+    st.markdown('**오늘의 날씨**')
+    weather_summary()
+camera, items = st.columns([3, 2], gap='large')
+with camera, card('camera_card'):
+    st.subheader('준비물 카메라')
+    camera_enabled = st.checkbox('카메라 사용', value=True, key='camera_enabled')
+    st.caption('카메라를 허용하면 자동 인식합니다. 중지하려면 카메라 사용을 해제하세요.')
+    with st.expander('검사 구역 설정'):
+        x_key, y_key = 'roi_x_input_' + st.session_state.user_id, 'roi_y_input_' + st.session_state.user_id
+        horizontal = st.slider('가로 검사 범위 (%)', 0, 100, value=tuple(st.session_state.roi_x), key=x_key,
+                               on_change=save_region_preference, args=('roi_x', x_key))
+        vertical = st.slider('세로 검사 범위 (%)', 0, 100, value=tuple(st.session_state.roi_y), key=y_key,
+                             on_change=save_region_preference, args=('roi_y', y_key))
+        st.caption('박스 중심이 구역 경계 안에 있는 물건만 확인합니다. 자동 확인은 최소 3회·0.8초 연속 탐지가 필요합니다.')
+    region = (horizontal[0] / 100, vertical[0] / 100, horizontal[1] / 100, vertical[1] / 100)
+    valid_region = horizontal[0] < horizontal[1] and vertical[0] < vertical[1]
+    if not valid_region:
+        st.warning('검사 구역의 가로·세로 폭을 0보다 크게 설정해주세요.')
+    live.configure(region if valid_region else live.region, confidence, camera_enabled and valid_region and bool(checklist.items))
+    try:
+        from streamlit_webrtc import webrtc_streamer, WebRtcMode
+        camera_options = {}
+        if 'media_toggle_controls' in inspect.signature(webrtc_streamer).parameters:
+            camera_options['media_toggle_controls'] = False
+        context = webrtc_streamer(
+            key='checkit_camera', mode=WebRtcMode.SENDRECV,
+            desired_playing_state=camera_enabled and valid_region and bool(checklist.items),
+            rtc_configuration={'iceServers': []},
+            media_stream_constraints={'video': {'width': {'ideal': 640}, 'height': {'ideal': 480}, 'frameRate': {'ideal': 10}}, 'audio': False},
+            video_frame_callback=live.recv, on_video_ended=live.pause,
+            async_processing=True,
+            **camera_options,
+            translations={'start': '카메라 다시 연결', 'stop': '카메라 중지',
+                          'device_ask_permission': '브라우저에서 카메라 권한을 허용해주세요.',
+                          'device_access_denied': '카메라 권한이 거부됐어요. 브라우저 설정에서 허용하거나 사진·수동 확인을 이용하세요.',
+                          'device_not_available': '사용할 수 있는 카메라가 없어요. 사진·수동 확인을 이용하세요.'},
+        )
+        st.session_state.live_context = context
+        if context.state.playing:
+            st.caption('● 영상 연결됨 · 검사 구역에 물건을 놓으세요.')
+        elif camera_enabled:
+            st.info('카메라 연결 대기 중입니다. 권한을 허용해주세요. 연결이 안 되면 카메라 사용을 껐다 켜거나 사진·수동 확인을 이용하세요.')
+        else:
+            st.caption('인식 중지 · 확인한 항목은 유지됩니다.')
+    except ImportError:
+        live.pause()
+        st.warning('실시간 카메라 의존성이 없습니다. requirements.txt를 설치한 뒤 다시 실행해주세요. 사진·수동 확인은 사용할 수 있습니다.')
+    with st.expander('사진으로 확인'):
+        st.caption('사진은 전체 이미지에서 즉시 확인합니다. 수동 해제한 종류는 영상에서 1초 이상 사라진 뒤 재확인하거나 직접 체크해주세요.')
+        source = st.radio('사진 입력 방식', ['이미지 업로드', '카메라 촬영'], horizontal=True)
+        if source == '이미지 업로드':
+            photo = st.file_uploader('사진 선택 (JPG / PNG / WEBP)', type=['jpg', 'jpeg', 'png', 'webp'])
+        else:
+            photo = st.camera_input('준비물 사진 촬영')
+        if st.button('사진 분석 실행', disabled=not checklist.items, key='analyze'):
+            if photo is None:
+                st.warning('먼저 사진을 촬영하거나 업로드하세요.')
+            else:
+                try:
+                    with st.spinner('사진 분석 중…'):
+                        rows, annotated = st.session_state.detector.detect(photo.getvalue(), confidence)
+                        checklist.apply_detections(live.photo_allowed(row['class_name'] for row in rows))
+                        st.session_state.analysis = (rows, annotated)
+                        st.session_state.notice = '' if rows else '탐지 결과가 없습니다. 다른 사진이나 수동 확인을 사용하세요.'
+                    sync()
+                    st.rerun()
+                except RuntimeError as exc:
+                    st.error(str(exc))
+                    controller.send_state('ERROR')
+        if st.session_state.notice:
+            st.info(st.session_state.notice)
+        if st.session_state.analysis is not None:
+            rows, annotated = st.session_state.analysis
+            st.image(annotated, caption='준비물 탐지·등록 사진 비교 결과')
+            with st.expander('탐지 상세'):
+                st.dataframe(rows)
+@st.fragment(run_every=0.5)
+def dashboard():
+    if st.session_state.profile['day'] != today():
+        st.rerun()
+    for event in controller.poll():
+        action(event)
+    ready, error, last_frame = live.drain()
+    context = st.session_state.get('live_context')
+    playing = context is not None and context.state.playing
+    if playing and last_frame is not None and time.monotonic() - last_frame <= 2 and not error:
+        before = dict(checklist.confirmed)
+        checklist.apply_detections(ready)
+        if checklist.confirmed != before:
+            sync()
+    if error:
+        st.warning(error + ' 다시 시도하거나 직접 체크해주세요.')
+    elif playing and live.status()['영상 프레임 수'] == 0:
+        st.info('영상 연결은 됐지만 프레임을 기다리고 있어요. 계속되면 카메라 사용을 껐다 켜거나 사진·수동 확인을 이용하세요.')
+    elif playing and (last_frame is None or time.monotonic() - last_frame > 2):
+        st.info('영상을 분석하고 있어요. 최초 실행에는 모델 로딩 시간이 필요합니다.')
+    elif playing:
+        st.caption('● 실시간 분석 중')
+    st.subheader('오늘의 준비물')
+    total = len(checklist.items)
+    st.write(f'{len(checklist.confirmed)}/{total} 확인')
+    if total:
+        st.progress(len(checklist.confirmed) / total)
+    for item in checklist.items:
+        key = item['class_name']
+        source = checklist.confirmed.get(key)
+        displayed = st.session_state.setdefault('displayed_checks', {})
+        if 'mark_' + key not in st.session_state or displayed.get(key) != bool(source):
+            st.session_state['mark_' + key] = bool(source)
+            displayed[key] = bool(source)
+        st.checkbox('~~' + item['name'] + '~~' if source else item['name'],
+                    key='mark_' + key, on_change=toggle_item, args=(key,))
+        st.caption({'auto': '자동 인식', 'manual': '직접 확인'}.get(source, '미확인'))
+    excluded_items = [row for row in st.session_state.profile['items'] if row['excluded_on'] == today()]
+    if excluded_items:
+        st.caption('오늘 제외: ' + ', '.join(row['name'] for row in excluded_items) + ' · 준비물 관리에서 복원할 수 있습니다.')
+    if not total:
+        st.info('오늘 검사할 준비물이 없어요.')
+    elif checklist.state == 'READY':
+        st.success('모든 준비물을 확인했어요. 출발 준비 완료!')
+    else:
+        st.info('확인해주세요: ' + ', '.join(i['name'] for i in checklist.missing))
+    st.button('새 검사', key='new_check', on_click=action, args=('NEW',), type='primary')
+    st.caption('새 검사를 누르면 현재 확인 결과를 초기화합니다.')
+    connected = controller.serial is not None
+    booting = connected and time.monotonic() < controller.ready_at
+    st.caption('장치: ' + ('시뮬레이션' if controller.simulation else '부팅 중' if booting else '연결됨' if connected else '미연결'))
+    st.caption('LCD 전송 내용 · ' + controller.outputs['LCD 수신 확인'])
+    st.code('\n'.join(line.ljust(16) for line in controller.outputs['LCD']), language=None)
+    if controller.error:
+        st.warning(controller.error)
+    with st.expander('장치 상태 / 통신 기록'):
+        st.caption('수신 확인은 명령 처리 확인이며 LCD 연결이나 실제 화면을 측정한 결과는 아닙니다.')
+        st.json(live.status())
+        st.json(controller.outputs)
+        st.button('현재 상태 재전송', on_click=sync, disabled=not controller.simulation and (not connected or booting))
+        st.code('\n'.join(controller.log) or '통신 기록 없음')
+    with st.expander('이번 검사 확인 기록'):
+        st.dataframe(checklist.history)
+        st.download_button('기록 JSON 저장', json.dumps(checklist.history, ensure_ascii=False, indent=2), 'checkit_history.json', 'application/json')
+
+
+with items, card('checklist_card'):
+    dashboard()
+with st.expander('내 물건 등록·관리'):
+    render_personal(store, st.session_state.user_id, live.region, load_profile)
+st.caption('목록·설정·등록 사진은 이 PC에 저장합니다. 검사 영상·시험 사진은 별도 저장하지 않으며 확인 결과는 새 브라우저 세션에서 초기화됩니다.')

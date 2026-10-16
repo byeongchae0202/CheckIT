@@ -1,0 +1,44 @@
+ZIP: C:\dev\해커톤\CheckIT_MVP.zip
+Files: 36
+Required files: OK
+CRC: OK
+Python syntax: OK
+Private settings: placeholder only
+User DB/photos/model: excluded
+
+CheckIT_MVP/.gitignore
+CheckIT_MVP/.streamlit/config.toml
+CheckIT_MVP/README.md
+CheckIT_MVP/UI_DESIGN.md
+CheckIT_MVP/VALIDATION.md
+CheckIT_MVP/app.py
+CheckIT_MVP/arduino/PROTOCOL.md
+CheckIT_MVP/arduino/checkit.ino
+CheckIT_MVP/arduino_controller.py
+CheckIT_MVP/checklist.py
+CheckIT_MVP/config.py
+CheckIT_MVP/data/items.json
+CheckIT_MVP/data/weather_regions.json
+CheckIT_MVP/detector.py
+CheckIT_MVP/local_settings.example.py
+CheckIT_MVP/local_settings.py
+CheckIT_MVP/personal.py
+CheckIT_MVP/personal_ui.py
+CheckIT_MVP/profiles.py
+CheckIT_MVP/realtime.py
+CheckIT_MVP/regions.py
+CheckIT_MVP/requirements.txt
+CheckIT_MVP/scripts/build_regions.py
+CheckIT_MVP/scripts/package_release.py
+CheckIT_MVP/tests/personal_fixtures.py
+CheckIT_MVP/tests/test_app.py
+CheckIT_MVP/tests/test_arduino.py
+CheckIT_MVP/tests/test_checklist.py
+CheckIT_MVP/tests/test_flow.py
+CheckIT_MVP/tests/test_personal.py
+CheckIT_MVP/tests/test_profiles.py
+CheckIT_MVP/tests/test_realtime.py
+CheckIT_MVP/tests/test_regions.py
+CheckIT_MVP/tests/test_release.py
+CheckIT_MVP/tests/test_weather.py
+CheckIT_MVP/weather.py

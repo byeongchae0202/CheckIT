@@ -1,0 +1,5 @@
+[
+  {"class_name": "bottle", "name": "물병"},
+  {"class_name": "book", "name": "책"},
+  {"class_name": "umbrella", "name": "우산"}
+]

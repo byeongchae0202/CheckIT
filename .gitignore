@@ -1,0 +1,9 @@
+.checkit-tools/
+Ultralytics/
+**/Ultralytics/
+**/__pycache__/
+**/.venv/
+**/local_settings.py
+**/profiles.sqlite3*
+**/models/*.pt
+*.zip
