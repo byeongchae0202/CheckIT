@@ -1,6 +1,6 @@
 import time
 import unittest
-from arduino_controller import ArduinoController, command_for, lcd_lines
+from arduino_controller import ArduinoController, command_for, lcd_lines, servo_angle_for_state
 
 
 class FakeSerial:
@@ -129,8 +129,15 @@ class ArduinoTests(unittest.TestCase):
         for state, count in [('SCANNING', 0), ('MISSING', 2), ('READY', 0), ('IDLE', 0), ('ERROR', 0)]:
             self.assertTrue(c.send_state(state, count))
             self.assertEqual(c.state, state)
+            self.assertEqual(c.outputs['서보 각도'], servo_angle_for_state(state))
+        self.assertEqual(servo_angle_for_state('READY'), 150)
+        self.assertEqual(servo_angle_for_state('SCANNING'), 30)
+        self.assertEqual(servo_angle_for_state('MISSING'), 30)
+        self.assertEqual(servo_angle_for_state('IDLE'), 90)
+        self.assertEqual(servo_angle_for_state('EMPTY'), 90)
+        self.assertEqual(servo_angle_for_state('ERROR'), 90)
         c.send_state('READY')
-        self.assertEqual(c.outputs['서보 각도'], 90)
+        self.assertEqual(c.outputs['서보 각도'], 150)
         self.assertEqual(c.outputs['초록 LED'], '켜짐')
 
     def test_serial_ack_and_partial_lines(self):

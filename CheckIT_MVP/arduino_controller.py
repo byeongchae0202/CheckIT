@@ -4,6 +4,14 @@ from collections import deque
 from config import BAUDRATE, ACK_TIMEOUT
 
 
+def servo_angle_for_state(state):
+    if state == 'READY':
+        return 150
+    if state in ('SCANNING', 'MISSING'):
+        return 30
+    return 90
+
+
 def command_for(state, missing=0):
     if state == 'MISSING':
         if not isinstance(missing, int) or not 1 <= missing <= 99:
@@ -188,7 +196,7 @@ class ArduinoController:
             'IDLE / CHECK' if self.state in ('IDLE', 'EMPTY') else self.state,
             f'Unconfirmed: {self.missing}' if self.state == 'MISSING' else '')
         return {'안내판': 'READY' if self.state == 'READY' else 'CHECK',
-                '서보 각도': 90 if self.state == 'READY' else 0,
+                '서보 각도': servo_angle_for_state(self.state),
                 '초록 LED': '켜짐' if self.state == 'READY' else '꺼짐',
                 '빨간 LED': ('점멸' if self.state in ('SCANNING', 'ERROR') else
                            '켜짐' if self.state == 'MISSING' else '꺼짐'),
