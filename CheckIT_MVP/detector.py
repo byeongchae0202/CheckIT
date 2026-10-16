@@ -3,17 +3,30 @@ from config import MODEL_FILE
 from threading import Lock
 
 
+def same_object_box(first, second):
+    """Also handle a label match contained inside a full bottle detection."""
+    from personal import overlap
+    left, top = max(first[0], second[0]), max(first[1], second[1])
+    right, bottom = min(first[2], second[2]), min(first[3], second[3])
+    intersection = max(0, right - left) * max(0, bottom - top)
+    smaller = min(max(0, first[2] - first[0]) * max(0, first[3] - first[1]),
+                  max(0, second[2] - second[0]) * max(0, second[3] - second[1]))
+    return overlap(first, second) > .3 or intersection / max(1, smaller) >= .65
+
+
 class Detector:
     def __init__(self):
         self.model = None
         self.lock = Lock()
         self.personal = None
+        self.personal_labels = {}
 
     def set_personal_references(self, references):
         from personal import PersonalMatcher
         matcher = PersonalMatcher(references) if references else None
         with self.lock:
             self.personal = matcher
+            self.personal_labels = {r["class_name"]: (r.get("name", "REGISTERED ITEM"), r.get("lcd_name", "REGISTERED ITEM")) for r in references}
 
     def detect_bgr(self, bgr, confidence=0.4):
         """영상 프레임과 사진이 같은 모델을 안전하게 공유한다."""
@@ -31,7 +44,33 @@ class Detector:
                      'confidence': float(box.conf.item()),
                      'box': box.xyxy[0].tolist()} for box in result.boxes]
             if self.personal is not None:
-                rows.extend(self.personal.match(bgr))
+                personal_rows = self.personal.match(bgr)
+                # Retry on bottle candidates at a larger local scale when the
+                # full-frame matcher could not identify the registered product.
+                if not personal_rows:
+                    height, width = bgr.shape[:2]
+                    for candidate in rows:
+                        if candidate['class_name'] not in ('bottle', 'vase'):
+                            continue
+                        x1, y1, x2, y2 = candidate['box']
+                        padding = max(x2 - x1, y2 - y1) * .2
+                        left, top = max(0, int(x1 - padding)), max(0, int(y1 - padding))
+                        right, bottom = min(width, int(x2 + padding)), min(height, int(y2 + padding))
+                        if right <= left or bottom <= top:
+                            continue
+                        for match in self.personal.match(bgr[top:bottom, left:right]):
+                            a, b, c, d = match['box']
+                            match['box'] = [a + left, b + top, c + left, d + top]
+                            if same_object_box(candidate['box'], match['box']):
+                                personal_rows.append(match)
+                for row in personal_rows:
+                    row["name"] = self.personal_labels.get(row["class_name"], ("REGISTERED ITEM", "REGISTERED ITEM"))[0]
+                # A registered object takes precedence only at its matched location.
+                keep = [i for i, row in enumerate(rows)
+                        if not any(same_object_box(row['box'], match['box'])
+                                   for match in personal_rows)]
+                rows = [rows[i] for i in keep] + personal_rows
+                result.boxes = result.boxes[keep]
             annotated = result.plot()
             if self.personal is not None:
                 import cv2
@@ -39,7 +78,7 @@ class Detector:
                     if row.get('kind') == 'personal':
                         x1, y1, x2, y2 = map(int, row['box'])
                         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 180, 80), 2)
-                        cv2.putText(annotated, 'REGISTERED ITEM', (x1, max(18, y1)), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 180, 80), 1)
+                        cv2.putText(annotated, self.personal_labels.get(row['class_name'], ('REGISTERED ITEM', 'REGISTERED ITEM'))[1], (x1, max(18, y1)), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 180, 80), 1)
             return rows, annotated
 
     def detect(self, image_bytes, confidence=0.4):

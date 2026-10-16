@@ -4,19 +4,21 @@
 <style>
 body { margin: 0; font: 14px sans-serif; color: #31333f; }
 select, button { padding: 8px; border: 1px solid #ccc; border-radius: 6px; background: white; }
-video { width: 100%; max-height: 360px; background: #111; }
+video, #preview { width: 100%; max-height: 360px; background: #111; }
 #status { margin: 8px 0; }
 </style>
 <label id="selector">USB 카메라 <select aria-label="USB 카메라"></select></label>
 <button id="retry" type="button">다시 연결</button>
 <div id="status" role="status"></div>
 <video autoplay muted playsinline hidden></video>
+<img id="preview" alt="촬영한 USB 카메라 사진" hidden>
 <button id="capture" type="button" hidden disabled>사진 촬영</button>
 <script>
 const select = document.querySelector('select');
 const video = document.querySelector('video');
 const status = document.querySelector('#status');
 const capture = document.querySelector('#capture');
+const preview = document.querySelector('#preview');
 let args, stream, version = 0, signature = '', devices = [];
 function send(type, extra = {}) {
   parent.postMessage({isStreamlitMessage: true, type, ...extra}, '*');
@@ -57,6 +59,8 @@ function choose() {
 async function update() {
   const current = ++version;
   stop();
+  preview.hidden = true;
+  preview.removeAttribute('src');
   status.textContent = 'USB 카메라 연결 중…';
   const photo = args.mode === 'photo';
   document.querySelector('#selector').hidden = photo;
@@ -112,8 +116,14 @@ capture.addEventListener('click', () => {
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   canvas.getContext('2d').drawImage(video, 0, 0);
-  emit({device_id: args.device.id, photo: canvas.toDataURL('image/jpeg', 0.9).split(',')[1]});
-  status.textContent = 'USB 카메라 사진을 촬영했습니다. 분석 버튼을 눌러주세요.';
+  const photo = canvas.toDataURL('image/jpeg', 0.9);
+  preview.src = photo;
+  preview.hidden = false;
+  video.hidden = true;
+  capture.hidden = true;
+  stop();
+  emit({device_id: args.device.id, photo: photo.split(',')[1]});
+  status.textContent = '';
   resize();
 });
 window.addEventListener('message', event => {

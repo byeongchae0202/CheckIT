@@ -249,7 +249,7 @@ class ProfileStore:
         return key
 
     def reference_photos(self, user_id, key=None, active_only=False):
-        sql = 'SELECT p.* FROM personal_photos p JOIN items i ON p.user_id=i.user_id AND p.class_name=i.class_name WHERE p.user_id=?'
+        sql = 'SELECT p.*, i.name, i.lcd_name FROM personal_photos p JOIN items i ON p.user_id=i.user_id AND p.class_name=i.class_name WHERE p.user_id=?'
         params = [user_id]
         if key is not None:
             sql += ' AND p.class_name=?'
