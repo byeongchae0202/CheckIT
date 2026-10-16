@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<style>
+body { margin: 0; font: 14px sans-serif; color: #31333f; }
+select, button { padding: 8px; border: 1px solid #ccc; border-radius: 6px; background: white; }
+video { width: 100%; max-height: 360px; background: #111; }
+#status { margin: 8px 0; }
+</style>
+<label id="selector">USB 카메라 <select aria-label="USB 카메라"></select></label>
+<button id="retry" type="button">다시 연결</button>
+<div id="status" role="status"></div>
+<video autoplay muted playsinline hidden></video>
+<button id="capture" type="button" hidden disabled>사진 촬영</button>
+<script>
+const select = document.querySelector('select');
+const video = document.querySelector('video');
+const status = document.querySelector('#status');
+const capture = document.querySelector('#capture');
+let args, stream, version = 0, signature = '', devices = [];
+function send(type, extra = {}) {
+  parent.postMessage({isStreamlitMessage: true, type, ...extra}, '*');
+}
+function resize() {
+  send('streamlit:setFrameHeight', {height: document.body.scrollHeight + 8});
+}
+function emit(value) {
+  send('streamlit:setComponentValue', {value, dataType: 'json'});
+}
+function stop() {
+  stream?.getTracks().forEach(track => track.stop());
+  stream = null;
+  video.srcObject = null;
+  capture.disabled = true;
+}
+function fail(error) {
+  const messages = {
+    NotAllowedError: '카메라 권한을 허용해주세요.',
+    NotReadableError: '다른 앱의 카메라 사용을 종료하고 다시 연결해주세요.',
+    NotFoundError: 'USB 카메라가 연결되어 있는지 확인해주세요.',
+    OverconstrainedError: '선택한 USB 카메라가 분리됐습니다. 다시 연결해주세요.'
+  };
+  status.textContent = messages[error.name] || `${error.name}: ${error.message}`;
+  emit({error: status.textContent});
+  resize();
+}
+function choose() {
+  const device = devices.find(device => device.deviceId === select.value);
+  if (!device) throw new Error('USB 카메라를 찾지 못했습니다. USB 연결을 확인해주세요.');
+  // streamlit-webrtc 0.78 restores saved device IDs ahead of media constraints.
+  const key = `checkit_usb_camera_${device.deviceId}_${args.generation}`;
+  localStorage.setItem(`streamlit-webrtc:device-ids:${key}`, JSON.stringify({video: device.deviceId}));
+  status.textContent = `선택한 장치: ${device.label}`;
+  emit({device: {id: device.deviceId, label: device.label}, generation: args.generation});
+  resize();
+}
+async function update() {
+  const current = ++version;
+  stop();
+  status.textContent = 'USB 카메라 연결 중…';
+  const photo = args.mode === 'photo';
+  document.querySelector('#selector').hidden = photo;
+  video.hidden = capture.hidden = !photo;
+  resize();
+  try {
+    if (!navigator.mediaDevices) throw new Error('HTTPS 또는 localhost 주소로 접속해주세요.');
+    if (photo) {
+      const acquired = await navigator.mediaDevices.getUserMedia({
+        video: {deviceId: {exact: args.device.id}, width: {ideal: 640}, height: {ideal: 480}},
+        audio: false
+      });
+      if (current !== version) {
+        acquired.getTracks().forEach(track => track.stop());
+        return;
+      }
+      stream = acquired;
+      video.srcObject = stream;
+      await video.play();
+      if (current !== version) return;
+      status.textContent = `촬영 장치: ${stream.getVideoTracks()[0].label}`;
+      capture.disabled = false;
+      emit({device_id: args.device.id, photo: null});
+    } else {
+      let available = await navigator.mediaDevices.enumerateDevices();
+      if (!available.some(device => device.kind === 'videoinput' && device.label)) {
+        const permission = await navigator.mediaDevices.getUserMedia({video: true, audio: false});
+        permission.getTracks().forEach(track => track.stop());
+        available = await navigator.mediaDevices.enumerateDevices();
+      }
+      if (current !== version) return;
+      devices = available.filter(device => device.kind === 'videoinput' && /usb/i.test(device.label));
+      const previous = select.value;
+      select.replaceChildren(...devices.map(device => new Option(device.label, device.deviceId)));
+      if (devices.some(device => device.deviceId === previous)) select.value = previous;
+      choose();
+    }
+    resize();
+  } catch (error) {
+    if (current === version) {
+      stop();
+      fail(error);
+    }
+  }
+}
+select.addEventListener('change', () => {
+  try { choose(); } catch (error) { fail(error); }
+});
+document.querySelector('#retry').addEventListener('click', update);
+capture.addEventListener('click', () => {
+  if (!stream || !video.videoWidth) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  emit({device_id: args.device.id, photo: canvas.toDataURL('image/jpeg', 0.9).split(',')[1]});
+  status.textContent = 'USB 카메라 사진을 촬영했습니다. 분석 버튼을 눌러주세요.';
+  resize();
+});
+window.addEventListener('message', event => {
+  if (event.source !== parent || event.data.type !== 'streamlit:render') return;
+  args = event.data.args;
+  const next = JSON.stringify([args.mode, args.device, args.generation]);
+  if (signature !== next) {
+    signature = next;
+    update();
+  }
+});
+navigator.mediaDevices?.addEventListener('devicechange', () => {
+  if (args) update();
+});
+window.addEventListener('pagehide', stop);
+new ResizeObserver(resize).observe(document.body);
+send('streamlit:componentReady', {apiVersion: 1});
+</script>
+</html>

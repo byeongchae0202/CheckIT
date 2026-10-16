@@ -20,6 +20,26 @@ class AppTests(unittest.TestCase):
         key_setting = patch('config.get_weather_key', return_value='')
         key_setting.start()
         self.addCleanup(key_setting.stop)
+        camera_setting = patch('camera.usb_device', return_value={'id': 'test-usb', 'label': 'USB CAMERA'})
+        camera_setting.start()
+        self.addCleanup(camera_setting.stop)
+
+    def test_video_uses_selected_usb_camera_and_waits_when_missing(self):
+        from streamlit.testing.v1 import AppTest
+        context = SimpleNamespace(state=SimpleNamespace(playing=False))
+        with patch('streamlit_webrtc.webrtc_streamer', return_value=context) as streamer:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run()
+            self.assertFalse(app.exception)
+            options = streamer.call_args.kwargs
+            self.assertEqual(options['media_stream_constraints']['video']['deviceId'], {'exact': 'test-usb'})
+            self.assertTrue(options['desired_playing_state'])
+            app.checkbox(key='camera_enabled').uncheck().run()
+            self.assertFalse(streamer.call_args.kwargs['desired_playing_state'])
+            with patch('camera.usb_device', return_value=None):
+                app.checkbox(key='camera_enabled').check().run()
+                self.assertFalse(streamer.call_args.kwargs['desired_playing_state'])
+                self.assertFalse(app.session_state.live.enabled)
+            self.assertFalse(app.exception)
 
     def test_personal_enable_detection_and_deletion(self):
         from streamlit.testing.v1 import AppTest

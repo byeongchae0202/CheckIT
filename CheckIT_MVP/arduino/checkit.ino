@@ -1,6 +1,6 @@
 // Arduino IDE: checkit 폴더 안의 checkit.ino로 열고 UNO에 업로드하세요.
 // LCD가 없다면 0. 이 경우 LiquidCrystal_I2C 라이브러리도 필요 없습니다.
-#define USE_LCD 0
+#define USE_LCD 1
 #include <Servo.h>
 #if USE_LCD
 #include <Wire.h>

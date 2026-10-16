@@ -17,5 +17,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(archive.read('CheckIT_MVP/local_settings.py'), (project / 'local_settings.example.py').read_bytes())
                 self.assertIn('CheckIT_MVP/data/weather_regions.json', names)
                 self.assertIn('CheckIT_MVP/personal.py', names)
+                self.assertIn('CheckIT_MVP/camera.py', names)
+                self.assertIn('CheckIT_MVP/camera_frontend/index.html', names)
                 self.assertFalse(any(name.endswith(('.sqlite3', '.pt', '.pyc')) for name in names))
                 self.assertFalse(any('.checkit-tools' in name or '.venv' in name or '__pycache__' in name for name in names))

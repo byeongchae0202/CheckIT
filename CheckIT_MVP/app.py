@@ -14,6 +14,7 @@ from config import PROFILE_DB, get_weather_key
 from weather import WeatherClient, WeatherRunner, DEFAULT_WEATHER, MODES, request_token, weather_message
 from regions import load_regions, RegionIndex
 from personal_ui import render_personal
+from camera import usb_device, usb_photo
 
 st.set_page_config(page_title='CheckIT · 외출 준비', page_icon='🎒', layout='wide', initial_sidebar_state='collapsed')
 st.markdown('''<style>
@@ -356,20 +357,22 @@ def weather_summary():
         st.caption(settings['region_name'] + ' · 조회 ' + result.checked_at[11:16] + ' · ' + ' / '.join(result.references) + ' · 출처: 기상청')
 
 
-# 카메라만 주기 갱신하고 준비물 위젯은 실제 상태 변경 때 갱신한다.
+# 연결 위젯은 유지하고 카메라 상태만 주기 갱신한다.
 def render_workspace():
     with card('weather_card'):
         st.markdown('**오늘의 날씨**')
         weather_summary()
     camera, items = st.columns([3, 2], gap='large')
-    @st.fragment(run_every=0.5)
     def render_camera():
         st.subheader('준비물 카메라')
         camera_enabled = st.checkbox('카메라 사용', value=True, key='camera_enabled')
         st.button('실시간 연결 초기화', key='restart_camera', on_click=restart_live_camera)
         st.caption('카메라를 허용하면 자동 인식합니다. 중지하려면 카메라 사용을 해제하세요.')
         st.caption('카메라 화면 전체에서 인식합니다. 자동 확인은 최소 3회·0.8초 연속 탐지가 필요합니다.')
-        live.configure((0.0, 0.0, 1.0, 1.0), confidence, camera_enabled and bool(checklist.items))
+        device = usb_device()
+        st.session_state.usb_camera = device
+        live_enabled = camera_enabled and bool(checklist.items) and device is not None
+        live.configure((0.0, 0.0, 1.0, 1.0), confidence, live_enabled)
         try:
             from streamlit_webrtc import webrtc_streamer, WebRtcMode
             camera_options = {}
@@ -381,10 +384,13 @@ def render_workspace():
                     'controls': True, 'style': {'width': '100%'},
                 }
             context = webrtc_streamer(
-                key='checkit_camera_' + str(st.session_state.get('camera_generation', 0)), mode=WebRtcMode.SENDRECV,
-                desired_playing_state=camera_enabled and bool(checklist.items),
+                key='checkit_usb_camera_' + (device['id'] if device else 'pending') + '_' + str(st.session_state.get('camera_generation', 0)), mode=WebRtcMode.SENDRECV,
+                desired_playing_state=live_enabled,
                 rtc_configuration={'iceServers': []},
-                media_stream_constraints={'video': {'width': {'ideal': 640}, 'height': {'ideal': 480}, 'frameRate': {'ideal': 10}}, 'audio': False},
+                media_stream_constraints={'video': {
+                    'deviceId': {'exact': device['id']} if device else {'exact': 'usb-camera-pending'},
+                    'width': {'ideal': 640}, 'height': {'ideal': 480}, 'frameRate': {'ideal': 10},
+                }, 'audio': False},
                 video_frame_callback=live.recv, on_video_ended=live.pause,
                 async_processing=True,
                 **camera_options,
@@ -413,7 +419,7 @@ def render_workspace():
                     st.info('사진 촬영 전 위의 카메라 사용을 꺼주세요. 실시간 영상과 사진 촬영이 같은 카메라를 동시에 사용하지 않도록 합니다.')
                     photo = None
                 else:
-                    photo = st.camera_input('준비물 사진 촬영')
+                    photo = usb_photo(device, key='checklist_usb_photo')
             if st.button('사진 분석 실행', disabled=not checklist.items, key='analyze'):
                 if photo is None:
                     st.warning('먼저 사진을 촬영하거나 업로드하세요.')
@@ -436,6 +442,9 @@ def render_workspace():
                 st.image(annotated, caption='준비물 탐지·등록 사진 비교 결과')
                 with st.expander('탐지 상세'):
                     st.dataframe(rows)
+
+    @st.fragment(run_every=0.5)
+    def poll_camera():
         if st.session_state.profile['day'] != today():
             st.rerun()
         before_poll = (dict(checklist.confirmed), checklist.state, repr(controller.outputs), controller.error)
@@ -448,7 +457,7 @@ def render_workspace():
             camera_status = live.status()
             st.caption(f"카메라 진단 · 연결: {'연결됨' if playing else '대기'} · 수신 프레임: {camera_status['영상 프레임 수']} · 분석: {'진행 중' if camera_status['분석 중'] else '대기'}")
             if not playing:
-                st.info('검은 화면에서 계속 로딩되면 카메라 장치를 Integrated Camera로 선택하고, 카메라를 사용하는 다른 앱을 닫아주세요. 아래 ‘사진으로 확인 → 카메라 촬영’으로 영상 연결과 별개로 카메라가 열리는지 확인할 수 있습니다.')
+                st.info('실시간 영상과 사진 촬영은 위에서 선택한 USB 카메라를 사용합니다. 연결되지 않으면 다른 앱의 카메라 사용을 종료하고 ‘실시간 연결 초기화’를 눌러주세요.')
         if playing and last_frame is not None and time.monotonic() - last_frame <= 2 and not error:
             before = dict(checklist.confirmed)
             checklist.apply_detections(ready)
@@ -472,6 +481,7 @@ def render_workspace():
 
     with camera, card('camera_card'):
         render_camera()
+        poll_camera()
 
     def dashboard():
         st.subheader('오늘의 준비물')

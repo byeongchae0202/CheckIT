@@ -3,6 +3,7 @@ import sqlite3
 import streamlit as st
 from personal import PersonalMatcher, decode_photo
 from realtime import inside_region
+from camera import usb_photo
 
 
 def render_personal(store, user_id, region, refresh):
@@ -64,7 +65,11 @@ def render_personal(store, user_id, region, refresh):
     if source == '사진 업로드':
         photo = st.file_uploader('검사 장면 사진', type=['jpg', 'jpeg', 'png', 'webp'], key='personal_scene_' + selected)
     else:
-        photo = st.camera_input('검사 장면 촬영', key='personal_camera_' + selected)
+        if st.session_state.get('camera_enabled'):
+            st.info('사진 촬영 전 준비물 카메라의 ‘카메라 사용’을 꺼주세요.')
+            photo = None
+        else:
+            photo = usb_photo(st.session_state.get('usb_camera'), key='personal_camera_' + selected)
     if st.button('개인 물건 인식 시험', key='test_personal_' + selected, disabled=not references):
         if photo is None:
             st.warning('검사 장면 사진을 먼저 선택해주세요.')

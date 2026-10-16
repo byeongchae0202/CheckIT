@@ -8,10 +8,10 @@ def package(project, destination):
     project, destination = Path(project).resolve(), Path(destination).resolve()
     core = ('app.py', 'arduino_controller.py', 'checklist.py', 'config.py', 'detector.py',
             'profiles.py', 'realtime.py', 'regions.py', 'weather.py', 'personal.py',
-            'personal_ui.py', 'local_settings.example.py')
+            'personal_ui.py', 'camera.py', 'local_settings.example.py')
     paths = [project / name for name in core]
     paths += [project / name for name in ('README.md', 'UI_DESIGN.md', 'VALIDATION.md', 'requirements.txt', '.gitignore')]
-    for directory, extensions in [('tests', {'.py'}), ('scripts', {'.py'}), ('arduino', {'.ino', '.md'}), ('.streamlit', {'.toml'})]:
+    for directory, extensions in [('tests', {'.py'}), ('scripts', {'.py'}), ('arduino', {'.ino', '.md'}), ('.streamlit', {'.toml'}), ('camera_frontend', {'.html'})]:
         paths += [path for path in (project / directory).rglob('*') if path.is_file() and path.suffix in extensions and '__pycache__' not in path.parts]
     paths += [project / 'data' / name for name in ('items.json', 'weather_regions.json')]
     temporary = destination.with_suffix('.zip.tmp')
